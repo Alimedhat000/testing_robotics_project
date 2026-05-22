@@ -21,6 +21,13 @@
 #define MIN_BLOB_SIZE   50      /* Minimum pixel count to treat as a real object */
 
 /* ------------------------------------------------------------- */
+/*  Calibration                                                  */
+/* ------------------------------------------------------------- */
+
+#define MIN_DARK_BLOB   20      /* Minimum dark pixels to count as a calibration dot */
+#define DARK_THRESHOLD  80      /* Max RGB value for a "dark" pixel (0–255) */
+
+/* ------------------------------------------------------------- */
 /*  Workspace geometry                                           */
 /*  CALIBRATE: measure your robot's reachable table area in mm   */
 /* ------------------------------------------------------------- */
