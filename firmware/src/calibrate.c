@@ -22,10 +22,11 @@ const float CALIB_MM[CALIB_N_POINTS][2] = {
     { 100.0f, -100.0f},
 };
 
-// ─────────────────────────────────────────────────────────────────
-//  Public: load H from NVS at boot
-// ─────────────────────────────────────────────────────────────────
-
+/**
+ * @brief Load homography from NVS at boot.
+ * Called once from setup().  If no valid H is saved, sets a flag so
+ * the caller knows to use fallback linear mapping.
+ */
 void calibrate_init(void)
 {
     calibrated = calibrate_nvs_load(CAM_H);
@@ -35,15 +36,21 @@ void calibrate_init(void)
         printf("[CALIB] No homography found — using fallback linear mapping.\n");
 }
 
+/**
+ * @brief Return whether homography is loaded.
+ * @return true if calibrated (calibrate_apply uses homography)
+ */
 bool calibrate_is_done(void)
 {
     return calibrated;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  Public: apply homography (pixel → robot mm)
-// ─────────────────────────────────────────────────────────────────
-
+/**
+ * @brief Apply 3×3 homography to transform pixel → robot mm.
+ * Computes: mm = H * (u, v, 1) with perspective divide.
+ * Relies on the internal CAM_H which is set by calibrate_init
+ * or calibrate_save_matrix.
+ */
 void calibrate_apply(uint32_t px, uint32_t py, float *mm_x, float *mm_y)
 {
     float u = (float)px;
@@ -53,17 +60,11 @@ void calibrate_apply(uint32_t px, uint32_t py, float *mm_x, float *mm_y)
     *mm_y = (CAM_H[1][0] * u + CAM_H[1][1] * v + CAM_H[1][2]) / w;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  Dark-dot detection (quadrant-based)
-//
-//  Divides the image into 4 quadrants and finds the dark-pixel
-//  centroid in each.  A pixel is "dark" when all RGB channels
-//  are below DARK_THRESHOLD.
-//
-//  Returns the number of dots found (0–4).
-//  Dots are returned in quadrant order: TL, TR, BL, BR.
-// ─────────────────────────────────────────────────────────────────
-
+/**
+ * @brief Find the centroid of dark pixels in a rectangular region.
+ * Scans from (x0, y0) to (x1, y1), accumulates matching pixels,
+ * returns false if fewer than MIN_DARK_BLOB were found.
+ */
 static bool find_dark_centroid(Pixel *pixels, int w, int h,
                                 int x0, int y0, int x1, int y1,
                                 uint32_t *out_x, uint32_t *out_y)
@@ -86,6 +87,12 @@ static bool find_dark_centroid(Pixel *pixels, int w, int h,
     return true;
 }
 
+/**
+ * @brief Detect 4 dark calibration dots (one per image quadrant).
+ * Quadrant order: TL → index 0, TR → index 1, BL → index 2, BR → index 3.
+ * This matches the order of CALIB_MM: (-100,100), (100,100), (-100,-100), (100,-100).
+ * @return Number of quadrants with a valid dot (0–4)
+ */
 int calibrate_find_dots(Pixel *pixels, int w, int h,
                          uint32_t out_ux[CALIB_N_POINTS],
                          uint32_t out_uy[CALIB_N_POINTS])
@@ -105,15 +112,13 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
     return found;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  DLT solver (Direct Linear Transform)
-//
-//  Builds an 8×8 linear system from 4 point pairs and solves it
-//  via Gaussian elimination with partial pivoting.
-// ─────────────────────────────────────────────────────────────────
-
 #define N 8
 
+/**
+ * @brief Solve an 8×8 linear system via Gaussian elimination with
+ * partial pivoting.  Modifies A and b in-place.  On return, b
+ * contains the solution vector.
+ */
 static void gauss_elim(float A[N][N], float b[N])
 {
     for (int col = 0; col < N; col++) {
@@ -148,6 +153,17 @@ static void gauss_elim(float A[N][N], float b[N])
     }
 }
 
+/**
+ * @brief Build and solve the 8×8 DLT system from 4 pixel→mm pairs.
+ *
+ * For each point i:
+ *   | ui vi 1  0  0  0  -ui*xi  -vi*xi |   | h00 |     | xi |
+ *   |  0  0  0  ui vi 1  -ui*yi  -vi*yi | * | h01 |  =  | yi |
+ *                                              ...
+ * After solving, computes and prints per-dot reprojection error.
+ *
+ * @return true (always succeeds; caller should verify rms).
+ */
 bool calibrate_solve(const uint32_t ux[CALIB_N_POINTS],
                       const uint32_t uy[CALIB_N_POINTS],
                       float H[3][3], float *rms)
@@ -193,6 +209,11 @@ bool calibrate_solve(const uint32_t ux[CALIB_N_POINTS],
     return true;
 }
 
+/**
+ * @brief Reproject the 4 calibration dots through H and print errors.
+ * Same computation as the reporting part of calibrate_solve, but
+ * does not re-solve.  Useful after loading a saved H to check quality.
+ */
 void calibrate_reproject(const float H[3][3],
                           const uint32_t ux[CALIB_N_POINTS],
                           const uint32_t uy[CALIB_N_POINTS])
@@ -214,9 +235,14 @@ void calibrate_reproject(const float H[3][3],
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  Persistence (delegated to main.cpp / C++ bridge)
+//  Persistence (delegated to main.cpp / C++ bridge for Preferences)
 // ─────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Save H to NVS and update the live matrix.
+ * Delegates actual NVS writes to calibrate_nvs_save() (in main.cpp).
+ * After calling, calibrate_is_done() returns true.
+ */
 void calibrate_save_matrix(const float H[3][3])
 {
     calibrate_nvs_save(H);
@@ -225,11 +251,18 @@ void calibrate_save_matrix(const float H[3][3])
     printf("[CALIB] Homography saved to NVS.\n");
 }
 
+/**
+ * @brief Load H from NVS via C++ bridge.
+ * @return true if a valid matrix was found and loaded.
+ */
 bool calibrate_load_matrix(float H[3][3])
 {
     return calibrate_nvs_load(H);
 }
 
+/**
+ * @brief Erase saved H from NVS and clear the live matrix flag.
+ */
 void calibrate_erase(void)
 {
     calibrate_nvs_erase();

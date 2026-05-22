@@ -21,13 +21,29 @@ static const int servoMax[NUM_SERVOS] = {
 
 #define STEP_DELAY_MS 15
 
-// ── Convert logical angle (-90..90) to servo.write() value (180..0) ──
+/**
+ * @brief Convert logical angle (-90..90) to servo.write() value.
+ *
+ * Servo.write() takes 0–180 where 90 is center.
+ * toPhysical maps the -90..90 logical convention so that:
+ *   - logical 0°  → servo.write(90)  (center)
+ *   - logical -90° → servo.write(180) (full CCW)
+ *   - logical 90°  → servo.write(0)   (full CW)
+ *
+ * @param logical  Logical angle in degrees (-90 to 90)
+ * @return Physical value for servo.write() (180 to 0)
+ */
 static int toPhysical(int logical)
 {
     return map(logical, -90, 90, 180, 0);
 }
 
-// ── Clamp angle to per-servo hardware limits ──
+/**
+ * @brief Clamp a logical angle to the per-servo hardware limits.
+ * @param index  Servo index (0–NUM_SERVOS-1)
+ * @param angle  Desired logical angle
+ * @return Clamped angle within [servoMin[index], servoMax[index]]
+ */
 static int clampServo(int index, int angle)
 {
     if (angle < servoMin[index]) return servoMin[index];
@@ -35,7 +51,13 @@ static int clampServo(int index, int angle)
     return angle;
 }
 
-// ── Move all servos simultaneously with stepped interpolation ──
+/**
+ * @brief Stepped interpolation loop.
+ *
+ * Moves all servos from currentAngle[] toward targetAngle[]
+ * one degree at a time (15 ms between steps).  This ensures all
+ * servos arrive simultaneously regardless of the distance traveled.
+ */
 static void moveAllServosSimultaneously(void)
 {
     bool moving = true;
@@ -60,6 +82,12 @@ static void moveAllServosSimultaneously(void)
 //  Public API
 // ─────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Attach all servos, home to 0°, and report limits.
+ *
+ * Each servo is attached with 500–2500 µs pulse range.
+ * A 300 ms delay between attachments prevents power surge.
+ */
 void servo_init(void)
 {
     for (int i = 0; i < NUM_SERVOS; i++) {
@@ -78,6 +106,9 @@ void servo_init(void)
                    servoMin[2], servoMax[2], servoMin[3], servoMax[3]);
 }
 
+/**
+ * @brief Return all servos to the home position (0°).
+ */
 void servo_home(void)
 {
     int angles[NUM_SERVOS] = {HOME_BASE_DEG, HOME_SHOULDER_DEG, HOME_ELBOW_DEG, 0};
@@ -85,6 +116,14 @@ void servo_home(void)
     Serial.println("[SERVO] Returned to home.");
 }
 
+/**
+ * @brief Move all servos to target angles simultaneously.
+ *
+ * Each angle is clamped to its per-servo limit, then all servos
+ * move together via stepped interpolation.
+ *
+ * @param angles_deg  Array of NUM_SERVOS logical target angles
+ */
 void servo_write_all(const int angles_deg[NUM_SERVOS])
 {
     for (int i = 0; i < NUM_SERVOS; i++) {
@@ -99,6 +138,11 @@ void servo_write_all(const int angles_deg[NUM_SERVOS])
     Serial.println();
 }
 
+/**
+ * @brief Move a single servo, leaving others unchanged.
+ * @param index        Servo index (0 = base, 1 = shoulder, 2 = elbow, 3 = gripper)
+ * @param logical_deg  Target angle in logical degrees
+ */
 void servo_write_single(int index, int logical_deg)
 {
     if (index < 0 || index >= NUM_SERVOS) return;
@@ -109,10 +153,19 @@ void servo_write_single(int index, int logical_deg)
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  Interactive servo test: enter angles, servos move
+//  Interactive servo test
 //  Activated by SERVOTEST command from main.cpp
 // ─────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Interactive serial servo test handler.
+ *
+ * Parses space-separated logical angle values from a single line,
+ * then calls servo_write_all() to move them simultaneously.
+ * Supports special commands: HOME (return to 0°), END (exit mode).
+ * If fewer than NUM_SERVOS values are provided, remaining servos
+ * stay at their current position.
+ */
 void servo_test_serial(void)
 {
     if (Serial.available() == 0) return;
@@ -121,7 +174,6 @@ void servo_test_serial(void)
     input.trim();
     if (input.length() == 0) return;
 
-    // Allow "HOME" to return to home
     if (input.equalsIgnoreCase("HOME")) {
         servo_home();
         return;
@@ -147,7 +199,6 @@ void servo_test_serial(void)
         start = spacePos + 1;
     }
 
-    // Fill remaining with current positions
     for (int i = index; i < NUM_SERVOS; i++)
         angles[i] = currentAngle[i];
 

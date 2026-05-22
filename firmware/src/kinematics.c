@@ -8,6 +8,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/**
+ * @brief Clamp a float to the inclusive range [lo, hi].
+ */
 static float clampf(float v, float lo, float hi)
 {
     if (v < lo) return lo;
@@ -15,6 +18,12 @@ static float clampf(float v, float lo, float hi)
     return v;
 }
 
+/**
+ * @brief Convert pixel coordinates to real-world mm.
+ *
+ * When calibrated (calibrate_is_done()), applies the homography matrix.
+ * Otherwise uses a simple linear rescaling over WORKSPACE_X_MM / Y_MM.
+ */
 void kinematics_pixel_to_mm(uint32_t px_x, uint32_t px_y,
                              float *out_x_mm, float *out_y_mm)
 {
@@ -28,6 +37,18 @@ void kinematics_pixel_to_mm(uint32_t px_x, uint32_t px_y,
            (unsigned long)px_x, (unsigned long)px_y, *out_x_mm, *out_y_mm);
 }
 
+/**
+ * @brief Solve 2-link planar IK using law of cosines.
+ *
+ * Steps:
+ *   1. Base angle = atan2(y, x)  // face the target
+ *   2. Reach = sqrt(x² + y²)
+ *   3. Check reachability (|L1-L2| ≤ reach ≤ L1+L2)
+ *   4. Elbow angle via law of cosines (elbow-up preferred)
+ *   5. Shoulder angle = α - β where β = atan2(L2·sinθ2, L1+L2·cosθ2)
+ *
+ * @return ArmAngles, or home if unreachable.
+ */
 ArmAngles kinematics_solve_ik(float x_mm, float y_mm)
 {
     ArmAngles home = {
@@ -84,6 +105,11 @@ ArmAngles kinematics_solve_ik(float x_mm, float y_mm)
     return angles;
 }
 
+/**
+ * @brief Convenience: bin pixel → IK angles.
+ * Converts bin pixel coordinates to mm, then solves IK.
+ * Used by arm_controller to compute drop-off angles for each color bin.
+ */
 ArmAngles kinematics_bin_angles(uint32_t bin_px_x, uint32_t bin_px_y)
 {
     float x_mm, y_mm;
