@@ -3,22 +3,14 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "types.h"
-#include <WiFi.h>
-#include <WebServer.h>
-#include "img_converters.h"
 #include "color_detect.h"
 #include "calibrate.h"
 #include "kinematics.h"
 #include "servo_control.h"
 #include <Preferences.h>
 
-// ─── WiFi credentials ─────────────────────────────────────────────────────
-const char* ssid     = "Rwan'sHouse";
-const char* password = "rwanshouse2024";
-
 // ─── Global state ─────────────────────────────────────────────────────────
 Pixel*     imageMatrix = nullptr;
-WebServer  server(80);
 
 // ─── Mode flags ────────────────────────────────────────────────────────────
 static bool inCalibMode     = false;
@@ -150,69 +142,13 @@ bool captureToMatrix() {
   return true;
 }
 
-// ─── Re-encode matrix → JPEG and send to browser ──────────────────────────
-void handleCapture() {
-  if (!imageMatrix) {
-    server.send(503, "text/plain", "No frame captured yet");
-    return;
-  }
-
-  uint8_t* jpegBuf = nullptr;
-  size_t   jpegLen = 0;
-
-  bool ok = fmt2jpg(
-    (uint8_t*) imageMatrix,
-    IMG_WIDTH * IMG_HEIGHT * 3,
-    IMG_WIDTH,
-    IMG_HEIGHT,
-    PIXFORMAT_RGB888,
-    80,
-    &jpegBuf,
-    &jpegLen
-  );
-
-  if (!ok || !jpegBuf) {
-    server.send(500, "text/plain", "JPEG conversion failed");
-    return;
-  }
-
-  server.send_P(200, "image/jpeg", (const char*)jpegBuf, jpegLen);
-  free(jpegBuf);
-}
-
-// ─── Root page ────────────────────────────────────────────────────────────
-void handleRoot() {
-  String html = "";
-  html += "<!DOCTYPE html><html><head>";
-  html += "<meta charset='utf-8'>";
-  html += "<title>ESP32 Capture</title>";
-  html += "<style>";
-  html += "body{background:#111;display:flex;flex-direction:column;";
-  html += "align-items:center;justify-content:center;min-height:100vh;";
-  html += "margin:0;font-family:sans-serif;color:#eee;}";
-  html += "img{border:2px solid #444;border-radius:6px;max-width:90vw;}";
-  html += "button{margin-top:16px;padding:10px 24px;font-size:16px;";
-  html += "background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;}";
-  html += "button:hover{background:#1d4ed8;}";
-  html += "</style></head><body>";
-  html += "<h2>ESP32-WROVER OV2640 - last capture</h2>";
-  html += "<img id='pic' src='/capture' alt='captured frame'>";
-  html += "<button onclick=\"document.getElementById('pic').src='/capture?t='+Date.now()\">";
-  html += "Capture new frame";
-  html += "</button>";
-  html += "</body></html>";
-
-  server.send(200, "text/html", html);
-}
-
-// ─── Scan imageMatrix and draw centroids ────────────────────────────────
-static DetectionResult last_detection = {false, 0, 0, COLOR_NONE};
-
+// ─── Scan imageMatrix and print object positions ─────────────────────────
 void run_detection() {
     if (!imageMatrix) return;
 
     static const Color colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_YELLOW};
     static const char* names[]  = {"RED", "GREEN", "BLUE", "YELLOW"};
+    bool any = false;
 
     for (int i = 0; i < 4; i++) {
         DetectionResult r = color_detect_scan_pixels(
@@ -220,20 +156,14 @@ void run_detection() {
         if (r.found) {
             float mm_x, mm_y;
             kinematics_pixel_to_mm(r.centroid_x, r.centroid_y, &mm_x, &mm_y);
-            Serial.printf("%s centroid: (%u, %u) → (%.1f, %.1f) mm\n",
+            Serial.printf("%s → pixel(%3u, %3u)  mm(%7.1f, %7.1f)\n",
                           names[i], r.centroid_x, r.centroid_y, mm_x, mm_y);
-
-            ArmAngles angles = kinematics_solve_ik(mm_x, mm_y);
-            (void)angles;
-            // TODO: call servo_write_all() when the pick state machine is ready
-
-            draw_centroid(imageMatrix, IMG_WIDTH, IMG_HEIGHT,
-                          (int)r.centroid_x, (int)r.centroid_y, colors[i]);
-            last_detection = r;
-        } else {
-            Serial.printf("%s centroid: (none)\n", names[i]);
+            any = true;
         }
     }
+
+    if (!any)
+        Serial.println("No objects detected.");
 }
 
 // ── Calibration mode ──────────────────────────────────────────────────
@@ -342,7 +272,6 @@ static void handle_servotest_serial(String &line) {
         return;
     }
 
-    // Parse space-separated angles
     int angles[NUM_SERVOS];
     int index = 0;
     int start = 0;
@@ -362,7 +291,6 @@ static void handle_servotest_serial(String &line) {
         start = spacePos + 1;
     }
 
-    // Fill remaining with current position
     for (int i = index; i < NUM_SERVOS; i++)
         angles[i] = 0;
 
@@ -390,7 +318,6 @@ static void dispatch_serial() {
         return;
     }
 
-    // Enter CALIB mode
     if (line.equalsIgnoreCase("CALIB") && !inCalibMode && !inServoTestMode) {
         inCalibMode = true;
         scanned = false;
@@ -405,7 +332,6 @@ static void dispatch_serial() {
         return;
     }
 
-    // Enter SERVOTEST mode
     if (line.equalsIgnoreCase("SERVOTEST") && !inCalibMode && !inServoTestMode) {
         inServoTestMode = true;
         Serial.println("[SERVO] Test mode active. Enter angles separated by spaces, e.g.:");
@@ -415,13 +341,11 @@ static void dispatch_serial() {
         return;
     }
 
-    // HOME from normal mode
     if (!inCalibMode && !inServoTestMode && line.equalsIgnoreCase("HOME")) {
         servo_home();
         return;
     }
 
-    // Route to active mode handler
     if (inCalibMode)
         handle_calib_serial(line);
     else if (inServoTestMode)
@@ -447,27 +371,14 @@ void setup() {
   Serial.println("First frame captured.");
   run_detection();
 
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\nConnected!");
-  Serial.printf("Open http://%s/ in your browser\n",
-                WiFi.localIP().toString().c_str());
-
-  server.on("/",        handleRoot);
-  server.on("/capture", handleCapture);
-  server.begin();
-
+  Serial.println("Auto-capture running every 2s. Send HELP for commands.");
   print_help();
 }
 
 // ─── loop ─────────────────────────────────────────────────────────────────
 void loop() {
-  server.handleClient();
-
   dispatch_serial();
 
-  // In any special mode, skip the normal capture/detect loop
   if (inCalibMode || inServoTestMode) {
     delay(10);
     return;
@@ -475,5 +386,5 @@ void loop() {
 
   captureToMatrix();
   run_detection();
-  delay(5000);
+  delay(2000);
 }
