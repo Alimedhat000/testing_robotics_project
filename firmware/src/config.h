@@ -40,39 +40,54 @@
 /*  CALIBRATE: measure your physical arm links                   */
 /* ------------------------------------------------------------- */
 
-#define LINK1_MM        100.0f  /* Shoulder → elbow length (mm), <-PLACEHOLDER-> */
-#define LINK2_MM        100.0f  /* Elbow → wrist  length (mm) , <-PLACEHOLDER-> */
+#define LINK1_MM        117.5f  /* Shoulder → elbow length (mm) */
+#define LINK2_MM        200.0f  /* Elbow → wrist  length (mm)  */
 
 /* ------------------------------------------------------------- */
-/*  Servo angle limits (degrees)                                 */
-/*  CALIBRATE: match your servo hardware limits                  */
+/*  Servo pins                                                   */
 /* ------------------------------------------------------------- */
 
-#define SERVO_BASE_MIN      0
-#define SERVO_BASE_MAX      180
-#define SERVO_SHOULDER_MIN  0
-#define SERVO_SHOULDER_MAX  180
+#define NUM_SERVOS      4
+
+#define SERVO1_PIN      12      /* Base */
+#define SERVO2_PIN      14      /* Shoulder */
+#define SERVO3_PIN      33      /* Elbow */
+#define SERVO4_PIN      32      /* Gripper */
+
+/* ------------------------------------------------------------- */
+/*  Servo angle limits (logical degrees, 0 = center)             */
+/*  These are enforced by the IK solver and servo_control.       */
+/*  toPhysical() maps logical -90..90 → servo.write() 180..0.   */
+/* ------------------------------------------------------------- */
+
+#define SERVO_BASE_MIN      -90
+#define SERVO_BASE_MAX      90
+#define SERVO_SHOULDER_MIN  -90
+#define SERVO_SHOULDER_MAX  20
 #define SERVO_ELBOW_MIN     0
-#define SERVO_ELBOW_MAX     180
-#define SERVO_GRIPPER_OPEN  30   /* Degrees for open  position, <-PLACEHOLDER-> */
-#define SERVO_GRIPPER_CLOSE 90   /* Degrees for closed position, <-PLACEHOLDER-> */
+#define SERVO_ELBOW_MAX     60
+#define SERVO_GRIPPER_MIN   -20
+#define SERVO_GRIPPER_MAX   40
+
+#define SERVO_GRIPPER_OPEN  30      /* Within [-20, 40], <-CALIBRATE-> */
+#define SERVO_GRIPPER_CLOSE -10     /* Within [-20, 40], <-CALIBRATE-> */
 
 /* ------------------------------------------------------------- */
-/*  Fixed Z heights (encoded as shoulder offset degrees)         */
+/*  Fixed Z heights (encoded as shoulder degrees)                */
 /*  CALIBRATE: find the servo angles for these heights           */
 /* ------------------------------------------------------------- */
 
-#define SHOULDER_HOVER_DEG  60  /* Arm raised, hovering above table, <-PLACEHOLDER-> */
-#define SHOULDER_PICK_DEG   30  /* Arm lowered to pick height     , <-PLACEHOLDER-> */
-#define SHOULDER_DROP_DEG   35  /* Arm lowered to drop height     , <-PLACEHOLDER-> */
+#define SHOULDER_HOVER_DEG  10  /* Arm raised, hovering above table, <-PLACEHOLDER-> */
+#define SHOULDER_PICK_DEG   -30 /* Arm lowered to pick height     , <-PLACEHOLDER-> */
+#define SHOULDER_DROP_DEG  -20  /* Arm lowered to drop height     , <-PLACEHOLDER-> */
 
 /* ------------------------------------------------------------- */
-/*  Home position (all servos in degrees)                        */
+/*  Home position (all servos at center = 0°)                     */
 /* ------------------------------------------------------------- */
 
-#define HOME_BASE_DEG       90
-#define HOME_SHOULDER_DEG   90
-#define HOME_ELBOW_DEG      90
+#define HOME_BASE_DEG       0
+#define HOME_SHOULDER_DEG   0
+#define HOME_ELBOW_DEG      0
 
 /* ------------------------------------------------------------- */
 /*  Bin locations in image-space pixels                          */

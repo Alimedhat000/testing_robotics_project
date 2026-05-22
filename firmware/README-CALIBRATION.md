@@ -46,7 +46,30 @@ If a dot is not found (e.g. `SCAN` reports fewer than 4), adjust lighting/paper 
 | `SAVE` | Persist homography to NVS |
 | `ERASE` | Remove saved homography from NVS |
 | `END` | Exit calibration mode |
+| `SERVOTEST` | Enter interactive servo test mode (see below) |
+| `HOME` | Return all servos to 0° (center) |
 | `HELP` | Print command list |
+
+### Servo test mode
+
+Send `SERVOTEST` to enter interactive mode. Type space-separated angles to move all servos simultaneously:
+
+```
+45 -30 20 10    ← move servo1=45°, servo2=-30°, servo3=20°, servo4=10°
+HOME            ← return all servos to 0°
+END             ← exit servo test mode
+```
+
+Angles are logical degrees (0 = center). The `toPhysical()` mapping converts them to servo.write() values automatically.
+
+### Servo mapping
+
+| Servo | Pin | Joint | Limits |
+|-------|-----|-------|--------|
+| 1 | 12 | Base (rotation) | -90° to 90° |
+| 2 | 14 | Shoulder | -90° to 20° |
+| 3 | 33 | Elbow | 0° to 60° |
+| 4 | 32 | Gripper | -20° to 40° |
 
 ## Troubleshooting
 

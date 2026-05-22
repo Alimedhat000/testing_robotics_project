@@ -9,6 +9,7 @@
 #include "color_detect.h"
 #include "calibrate.h"
 #include "kinematics.h"
+#include "servo_control.h"
 #include <Preferences.h>
 
 // ─── WiFi credentials ─────────────────────────────────────────────────────
@@ -19,8 +20,11 @@ const char* password = "rwanshouse2024";
 Pixel*     imageMatrix = nullptr;
 WebServer  server(80);
 
+// ─── Mode flags ────────────────────────────────────────────────────────────
+static bool inCalibMode     = false;
+static bool inServoTestMode = false;
+
 // ─── Calibration state ─────────────────────────────────────────────────────
-static bool   inCalibMode = false;
 static bool   scanned     = false;
 static bool   solved      = false;
 static uint32_t dot_px[4], dot_py[4];
@@ -202,6 +206,8 @@ void handleRoot() {
 }
 
 // ─── Scan imageMatrix and draw centroids ────────────────────────────────
+static DetectionResult last_detection = {false, 0, 0, COLOR_NONE};
+
 void run_detection() {
     if (!imageMatrix) return;
 
@@ -216,52 +222,36 @@ void run_detection() {
             kinematics_pixel_to_mm(r.centroid_x, r.centroid_y, &mm_x, &mm_y);
             Serial.printf("%s centroid: (%u, %u) → (%.1f, %.1f) mm\n",
                           names[i], r.centroid_x, r.centroid_y, mm_x, mm_y);
+
+            ArmAngles angles = kinematics_solve_ik(mm_x, mm_y);
+            (void)angles;
+            // TODO: call servo_write_all() when the pick state machine is ready
+
             draw_centroid(imageMatrix, IMG_WIDTH, IMG_HEIGHT,
                           (int)r.centroid_x, (int)r.centroid_y, colors[i]);
+            last_detection = r;
         } else {
             Serial.printf("%s centroid: (none)\n", names[i]);
         }
     }
 }
 
-// ─── Calibration serial CLI ─────────────────────────────────────────────
-static void calibrate_print_help() {
+// ── Calibration mode ──────────────────────────────────────────────────
+
+static void print_calib_help() {
     Serial.println("--- Calibration commands ---");
-    Serial.println("CALIB          — enter calibration mode");
     Serial.println("SCAN           — capture frame, detect 4 dark dots");
     Serial.println("SOLVE          — compute homography from SCAN data");
     Serial.println("REVIEW         — show last SCAN pixel coords");
     Serial.println("SAVE           — persist homography to NVS");
     Serial.println("ERASE          — remove saved homography from NVS");
     Serial.println("END            — exit calibration mode");
-    Serial.println("HELP           — show this list");
     Serial.println("----------------------------");
 }
 
-static void calibrate_handle_serial() {
-    if (!Serial.available()) return;
-
-    String line = Serial.readStringUntil('\n');
-    line.trim();
-
-    if (!inCalibMode && line.equalsIgnoreCase("CALIB")) {
-        inCalibMode = true;
-        scanned = false;
-        solved = false;
-        dot_count = 0;
-        had_previous_H = calibrate_is_done();
-        if (had_previous_H)
-            calibrate_load_matrix(old_H);
-        Serial.println("[CALIB] Mode active. Normal capture loop paused.");
-        Serial.println("[CALIB] Place 200x200mm paper with 4 dark dots centered under robot base.");
-        calibrate_print_help();
-        return;
-    }
-
-    if (!inCalibMode) return;
-
+static void handle_calib_serial(String &line) {
     if (line.equalsIgnoreCase("HELP")) {
-        calibrate_print_help();
+        print_calib_help();
         return;
     }
 
@@ -275,7 +265,7 @@ static void calibrate_handle_serial() {
 
     if (line.equalsIgnoreCase("SCAN")) {
         if (!captureToMatrix()) {
-            Serial.println("[CALIB] ERROR: capture failed. Check camera.");
+            Serial.println("[CALIB] ERROR: capture failed.");
             return;
         }
         dot_count = calibrate_find_dots(imageMatrix, IMG_WIDTH, IMG_HEIGHT,
@@ -290,38 +280,25 @@ static void calibrate_handle_serial() {
             Serial.println("[CALIB] All 4 dots detected. Send SOLVE to compute homography.");
         } else {
             Serial.printf("[CALIB] ERROR: found %d dot(s), need 4.\n", dot_count);
-            Serial.println("[CALIB] Check paper placement, lighting, and focus. Re-SCAN.");
         }
         return;
     }
 
     if (line.equalsIgnoreCase("REVIEW")) {
-        if (!scanned) {
-            Serial.println("[CALIB] No SCAN data. Run SCAN first.");
-            return;
-        }
+        if (!scanned) { Serial.println("[CALIB] No SCAN data."); return; }
         Serial.printf("[CALIB] Last SCAN: %d dots\n", dot_count);
         for (int i = 0; i < dot_count; i++)
-            Serial.printf("  Dot %d: pixel(%u, %u) → (%+.0f, %+.0f) mm\n",
-                          i, dot_px[i], dot_py[i],
-                          calibrate_is_done() ? -100.0f : 0.0f,
-                          calibrate_is_done() ? 100.0f : 0.0f);
+            Serial.printf("  Dot %d: pixel(%u, %u)\n", i, dot_px[i], dot_py[i]);
         return;
     }
 
     if (line.equalsIgnoreCase("SOLVE")) {
-        if (!scanned) {
-            Serial.println("[CALIB] No SCAN data. Run SCAN first.");
-            return;
-        }
-        if (dot_count < 4) {
-            Serial.println("[CALIB] Not enough dots found. Re-SCAN.");
-            return;
-        }
+        if (!scanned) { Serial.println("[CALIB] No SCAN data."); return; }
+        if (dot_count < 4) { Serial.println("[CALIB] Not enough dots."); return; }
 
         float rms;
         if (!calibrate_solve(dot_px, dot_py, calib_H, &rms)) {
-            Serial.println("[CALIB] ERROR: solver failed.");
+            Serial.println("[CALIB] Solver failed.");
             return;
         }
 
@@ -331,15 +308,11 @@ static void calibrate_handle_serial() {
         Serial.printf("  [%7.4f  %7.4f  %7.4f]\n", calib_H[1][0], calib_H[1][1], calib_H[1][2]);
         Serial.printf("  [%7.4f  %7.4f  %7.4f]\n", calib_H[2][0], calib_H[2][1], calib_H[2][2]);
         Serial.printf("[CALIB] RMS error: %.1f mm\n", rms);
-        Serial.println("[CALIB] Send SAVE to persist, or re-SCAN for a better capture.");
         return;
     }
 
     if (line.equalsIgnoreCase("SAVE")) {
-        if (!solved) {
-            Serial.println("[CALIB] Nothing to save. Run SCAN then SOLVE first.");
-            return;
-        }
+        if (!solved) { Serial.println("[CALIB] Nothing to save."); return; }
         calibrate_save_matrix(calib_H);
         return;
     }
@@ -351,8 +324,108 @@ static void calibrate_handle_serial() {
         return;
     }
 
-    Serial.printf("[CALIB] Unknown command: %s\n", line.c_str());
-    calibrate_print_help();
+    Serial.printf("[CALIB] Unknown: %s\n", line.c_str());
+    print_calib_help();
+}
+
+// ── Servo test mode ───────────────────────────────────────────────────
+
+static void handle_servotest_serial(String &line) {
+    if (line.equalsIgnoreCase("END")) {
+        inServoTestMode = false;
+        Serial.println("[SERVO] Test mode exited.");
+        return;
+    }
+
+    if (line.equalsIgnoreCase("HOME")) {
+        servo_home();
+        return;
+    }
+
+    // Parse space-separated angles
+    int angles[NUM_SERVOS];
+    int index = 0;
+    int start = 0;
+
+    while (index < NUM_SERVOS) {
+        int spacePos = line.indexOf(' ', start);
+        String val;
+        if (spacePos == -1)
+            val = line.substring(start);
+        else
+            val = line.substring(start, spacePos);
+
+        val.trim();
+        angles[index] = val.toInt();
+        index++;
+        if (spacePos == -1) break;
+        start = spacePos + 1;
+    }
+
+    // Fill remaining with current position
+    for (int i = index; i < NUM_SERVOS; i++)
+        angles[i] = 0;
+
+    servo_write_all(angles);
+}
+
+// ─── Serial command dispatcher ─────────────────────────────────────────
+
+static void print_help() {
+    Serial.println("--- Commands ---");
+    Serial.println("CALIB          — camera calibration mode");
+    Serial.println("SERVOTEST      — interactive servo test mode");
+    Serial.println("HOME           — return all servos to 0°");
+    Serial.println("----------------");
+}
+
+static void dispatch_serial() {
+    if (!Serial.available()) return;
+
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+
+    if (line.equalsIgnoreCase("HELP")) {
+        print_help();
+        return;
+    }
+
+    // Enter CALIB mode
+    if (line.equalsIgnoreCase("CALIB") && !inCalibMode && !inServoTestMode) {
+        inCalibMode = true;
+        scanned = false;
+        solved = false;
+        dot_count = 0;
+        had_previous_H = calibrate_is_done();
+        if (had_previous_H)
+            calibrate_load_matrix(old_H);
+        Serial.println("[CALIB] Mode active. Normal capture loop paused.");
+        Serial.println("[CALIB] Place 200x200mm paper with 4 dark dots centered under robot base.");
+        print_calib_help();
+        return;
+    }
+
+    // Enter SERVOTEST mode
+    if (line.equalsIgnoreCase("SERVOTEST") && !inCalibMode && !inServoTestMode) {
+        inServoTestMode = true;
+        Serial.println("[SERVO] Test mode active. Enter angles separated by spaces, e.g.:");
+        Serial.println("  45 -30 20 10");
+        Serial.println("  HOME  — return to 0°");
+        Serial.println("  END   — exit servo test mode");
+        return;
+    }
+
+    // HOME from normal mode
+    if (!inCalibMode && !inServoTestMode && line.equalsIgnoreCase("HOME")) {
+        servo_home();
+        return;
+    }
+
+    // Route to active mode handler
+    if (inCalibMode)
+        handle_calib_serial(line);
+    else if (inServoTestMode)
+        handle_servotest_serial(line);
 }
 
 // ─── setup ────────────────────────────────────────────────────────────────
@@ -368,6 +441,7 @@ void setup() {
   delay(100);
 
   calibrate_init();
+  servo_init();
 
   captureToMatrix();
   Serial.println("First frame captured.");
@@ -383,18 +457,19 @@ void setup() {
   server.on("/",        handleRoot);
   server.on("/capture", handleCapture);
   server.begin();
+
+  print_help();
 }
 
 // ─── loop ─────────────────────────────────────────────────────────────────
 void loop() {
   server.handleClient();
 
-  bool wasCalib = inCalibMode;
-  calibrate_handle_serial();
+  dispatch_serial();
 
-  if (inCalibMode || wasCalib) {
-    if (inCalibMode)
-      delay(10);
+  // In any special mode, skip the normal capture/detect loop
+  if (inCalibMode || inServoTestMode) {
+    delay(10);
     return;
   }
 
