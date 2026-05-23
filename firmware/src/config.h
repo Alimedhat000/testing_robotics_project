@@ -21,11 +21,13 @@
 #define MIN_BLOB_SIZE   50      /* Minimum pixel count to treat as a real object */
 
 /* ------------------------------------------------------------- */
-/*  Calibration                                                  */
+/*  Calibration — contrast-based dot detection                   */
+/*  No absolute brightness threshold; uses local 5x5 contrast.   */
 /* ------------------------------------------------------------- */
 
-#define MIN_DARK_BLOB   20      /* Minimum dark pixels to count as a calibration dot */
-#define DARK_THRESHOLD  80      /* Max RGB value for a "dark" pixel (0–255) */
+#define SEED_CONTRAST   5      /* Seed pixel contrast threshold (must be this much darker) */
+#define FLOOD_CONTRAST  3      /* Flood-fill neighbour contrast threshold (relaxed) */
+#define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000) */
 
 /* ------------------------------------------------------------- */
 /*  Workspace geometry                                           */
@@ -107,14 +109,8 @@
 /*  Shared data types used across all modules                    */
 /* ------------------------------------------------------------- */
 
-/* HSV color in 0–255 scale */
-typedef struct {
-    uint8_t h;
-    uint8_t s;
-    uint8_t v;
-} HSV;
+typedef struct { uint8_t h, s, v; } HSV;
 
-/* Color identifiers */
 typedef enum {
     COLOR_NONE   = 0,
     COLOR_RED    = 1,
@@ -123,22 +119,19 @@ typedef enum {
     COLOR_YELLOW = 4
 } Color;
 
-/* Result returned by the vision module after scanning one frame */
 typedef struct {
-    bool    found;          /* true if a valid object was detected */
-    uint32_t centroid_x;   /* object centroid in image pixels      */
+    bool    found;
+    uint32_t centroid_x;
     uint32_t centroid_y;
-    Color   color;          /* detected color of the object         */
+    Color   color;
 } DetectionResult;
 
-/* Servo angles for the three positional joints (degrees) */
 typedef struct {
-    float base_deg;         /* Servo 1, base rotation  */
-    float shoulder_deg;     /* Servo 2, shoulder joint */
-    float elbow_deg;        /* Servo 3, elbow joint    */
+    float base_deg;
+    float shoulder_deg;
+    float elbow_deg;
 } ArmAngles;
 
-/* Robot state machine states */
 typedef enum {
     STATE_SCAN,
     STATE_DETECT,

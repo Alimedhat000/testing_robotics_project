@@ -3,23 +3,27 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include "calibrate.h"
+#include "camera.h"
+#include "color_detect.h"
+#include "config.h"
+#include "kinematics.h"
+#include "types.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-#include "camera.h"
-#include "calibrate.h"
-#include "color_detect.h"
-#include "kinematics.h"
-#include "types.h"
-#include "config.h"
 
 /*
- * test_full — Offline pipeline test.
+ * test_full — Offline pipeline test with visual output.
  *
- * Loads a PNG, detects 4 dark calibration dots, computes the homography
+ * Loads an image, detects 4 dark calibration dots, computes the homography
  * matrix via DLT, then detects colored blocks and prints their real-world
  * (mm) positions and IK servo angles.
+ *
+ * Produces test_images/output.png with annotations:
+ *   - Green crosshairs at calibration dot positions
+ *   - White circles with R/G/B/Y letters at detected object centroids
  *
  * Usage:
  *   ./test_full [image.png]
@@ -28,68 +32,216 @@
  *   - 4 dark dots (~10mm) at the corners of a 200×200mm square,
  *     centered in the frame
  *   - Color blocks (red, green, blue, yellow) matching the HSV thresholds
- *
- * Calibration dots expected at (±100, ±100)mm in robot base frame.
  */
 
 // ── Apply homography: pixel(u,v) → robot mm(x,y) ──────────────────────
-static void apply_h(const float H[3][3], uint32_t u, uint32_t v,
-                     float *x, float *y)
-{
-    float w = H[2][0]*(float)u + H[2][1]*(float)v + 1.0f;
-    *x = (H[0][0]*(float)u + H[0][1]*(float)v + H[0][2]) / w;
-    *y = (H[1][0]*(float)u + H[1][1]*(float)v + H[1][2]) / w;
+static void apply_h(const float H[3][3], uint32_t u, uint32_t v, float *x,
+                    float *y) {
+  float w = H[2][0] * (float)u + H[2][1] * (float)v + 1.0f;
+  *x = (H[0][0] * (float)u + H[0][1] * (float)v + H[0][2]) / w;
+  *y = (H[1][0] * (float)u + H[1][1] * (float)v + H[1][2]) / w;
 }
 
 // ── Convert raw RGB888 buffer to Pixel struct array ────────────────────
-static Pixel* rgb_to_pixels(const uint8_t *rgb, int w, int h)
-{
-    Pixel *pix = (Pixel*)malloc((size_t)w * h * sizeof(Pixel));
-    if (!pix) return NULL;
-    for (int i = 0; i < w * h; i++) {
-        pix[i].r = rgb[i * 3 + 0];
-        pix[i].g = rgb[i * 3 + 1];
-        pix[i].b = rgb[i * 3 + 2];
-    }
-    return pix;
+static Pixel *rgb_to_pixels(const uint8_t *rgb, int w, int h) {
+  Pixel *pix = (Pixel *)malloc((size_t)w * h * sizeof(Pixel));
+  if (!pix)
+    return NULL;
+  for (int i = 0; i < w * h; i++) {
+    pix[i].r = rgb[i * 3 + 0];
+    pix[i].g = rgb[i * 3 + 1];
+    pix[i].b = rgb[i * 3 + 2];
+  }
+  return pix;
 }
 
-int main(int argc, char **argv)
+// ── Convert annotated Pixel array back to flat RGB888 ──────────────────
+static void pixels_to_rgb(const Pixel *pixels, uint8_t *rgb, int w, int h) {
+  for (int i = 0; i < w * h; i++) {
+    rgb[i * 3 + 0] = pixels[i].r;
+    rgb[i * 3 + 1] = pixels[i].g;
+    rgb[i * 3 + 2] = pixels[i].b;
+  }
+}
+
+// ── Draw a green crosshair at a pixel position ─────────────────────────
+static void draw_crosshair(Pixel *pixels, int w, int h, int cx, int cy) {
+  int size = 6;
+  for (int d = -size; d <= size; d++) {
+    int px = cx + d;
+    int py = cy;
+    if (px >= 0 && px < w) {
+      pixels[py * w + px].r = 0;
+      pixels[py * w + px].g = 255;
+      pixels[py * w + px].b = 0;
+    }
+  }
+  for (int d = -size; d <= size; d++) {
+    int px = cx;
+    int py = cy + d;
+    if (py >= 0 && py < h) {
+      pixels[py * w + px].r = 0;
+      pixels[py * w + px].g = 255;
+      pixels[py * w + px].b = 0;
+    }
+  }
+}
+
+// ── Brightness = max(r,g,b) ─────────────────────────────────────────
+static inline int brightness(const Pixel *p) {
+  int v = p->r > p->g ? (int)p->r : (int)p->g;
+  return v > (int)p->b ? v : (int)p->b;
+}
+
+// ── Average brightness in a 5×5 neighborhood ────────────────────────
+static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy) {
+  int sum = 0, n = 0;
+  for (int dy = -2; dy <= 2; dy++)
+    for (int dx = -2; dx <= 2; dx++) {
+      int px = cx + dx, py = cy + dy;
+      if (px < 0 || px >= w || py < 0 || py >= h) continue;
+      sum += brightness(&pixels[py * w + px]);
+      n++;
+    }
+  return n > 0 ? sum / n : 255;
+}
+
+// ── Flood-fill using contrast-based threshold (mirrors calibrate.c) ───
+static int dbg_flood(Pixel *pixels, int w, int h, int sx, int sy,
+                     uint8_t visited[], int *qx, int *qy, int max_q,
+                     int *min_x, int *max_x, int *min_y, int *max_y,
+                     int thresh)
 {
-    const char *path = (argc > 1) ? argv[1] : "test_images/input.png";
+  int head = 0, tail = 0, count = 0;
+  *min_x = sx; *max_x = sx; *min_y = sy; *max_y = sy;
+  qx[tail] = sx; qy[tail] = sy; tail++;
+  visited[sy * w + sx] = 1;
 
-    // ── Load image ───────────────────────────────────────────────────
-    int w = 0, h = 0;
-    uint8_t *rgb = camera_load_image(path, &w, &h);
-    if (!rgb) {
-        fprintf(stderr, "Error: cannot load %s\n", path);
-        return 1;
+  static const int dx[] = {0, 0, -1, 1};
+  static const int dy[] = {-1, 1, 0, 0};
+  while (head < tail) {
+    int x = qx[head], y = qy[head]; head++;
+    count++;
+    if (x < *min_x) *min_x = x;
+    if (x > *max_x) *max_x = x;
+    if (y < *min_y) *min_y = y;
+    if (y > *max_y) *max_y = y;
+    for (int d = 0; d < 4; d++) {
+      int nx = x + dx[d], ny = y + dy[d];
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+      if (visited[ny * w + nx]) continue;
+      if (brightness(&pixels[ny * w + nx]) >= thresh) continue;
+      visited[ny * w + nx] = 1;
+      if (tail >= max_q) continue;
+      qx[tail] = nx; qy[tail] = ny;
+      tail++;
     }
-    printf("Loaded: %s  (%d × %d)\n\n", path, w, h);
+  }
+  return count;
+}
 
-    Pixel *pixels = rgb_to_pixels(rgb, w, h);
-    if (!pixels) {
-        fprintf(stderr, "Error: malloc failed\n");
-        camera_free_image(rgb);
-        return 1;
+// ── Draw bounding boxes around contrast-based dark blobs ────────────
+static void draw_blob_boxes(Pixel *pixels, int w, int h) {
+  uint8_t *visited = (uint8_t *)calloc((size_t)w * h, 1);
+  int *qmem = (int *)malloc((size_t)w * h * 2 * sizeof(int));
+  if (!visited || !qmem) { free(visited); free(qmem); return; }
+  int *qx = qmem, *qy = qmem + (size_t)w * h;
+
+  int min_blob = MIN_DARK_BLOB > w * h / 10000 ? MIN_DARK_BLOB : w * h / 10000;
+  int max_span = (w > h ? w : h) / 8;
+
+  printf("\n=== Debug: All Dark Blobs (SEED_CONTRAST=%d, FLOOD_CONTRAST=%d) ===\n",
+         SEED_CONTRAST, FLOOD_CONTRAST);
+  printf("  min_blob=%d  max_span=%d\n\n", min_blob, max_span);
+
+  int idx = 0;
+  for (int y = 0; y < h && idx < 48; y++) {
+    for (int x = 0; x < w && idx < 48; x++) {
+      if (visited[y * w + x]) continue;
+
+      int seed_bright = brightness(&pixels[y * w + x]);
+      int local_bright = local_brightness(pixels, w, h, x, y);
+      int seed_thresh = local_bright - SEED_CONTRAST;
+      if (seed_bright >= seed_thresh) continue;
+
+      int flood_thresh = local_bright - FLOOD_CONTRAST;
+
+      int min_x, max_x, min_y, max_y;
+      int count = dbg_flood(pixels, w, h, x, y, visited, qx, qy, w * h,
+                            &min_x, &max_x, &min_y, &max_y, flood_thresh);
+      if (count < min_blob) continue;
+      int span_x = max_x - min_x;
+      int span_y = max_y - min_y;
+      int span = span_x > span_y ? span_x : span_y;
+      uint32_t cx = (uint32_t)(min_x + max_x) / 2;
+      uint32_t cy = (uint32_t)(min_y + max_y) / 2;
+      int contrast = local_bright - seed_bright;
+
+      printf("  blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d  "
+             "bbox(%d,%d)-(%d,%d)%s\n",
+             idx, cx, cy, span, count, contrast,
+             min_x, min_y, max_x, max_y,
+             span <= max_span ? "" : "  (rejected by max_span)");
+
+      uint8_t r = span <= max_span ? 0 : 255;
+      uint8_t g = 255;
+      uint8_t b = span <= max_span ? 0 : 128;
+
+      for (int bx = min_x; bx <= max_x; bx++) {
+        if (bx >= 0 && bx < w) {
+          if (min_y >= 0 && min_y < h) { pixels[min_y * w + bx].r = r; pixels[min_y * w + bx].g = g; pixels[min_y * w + bx].b = b; }
+          if (max_y >= 0 && max_y < h) { pixels[max_y * w + bx].r = r; pixels[max_y * w + bx].g = g; pixels[max_y * w + bx].b = b; }
+        }
+      }
+      for (int by = min_y; by <= max_y; by++) {
+        if (by >= 0 && by < h) {
+          if (min_x >= 0 && min_x < w) { pixels[by * w + min_x].r = r; pixels[by * w + min_x].g = g; pixels[by * w + min_x].b = b; }
+          if (max_x >= 0 && max_x < w) { pixels[by * w + max_x].r = r; pixels[by * w + max_x].g = g; pixels[by * w + max_x].b = b; }
+        }
+      }
+      idx++;
     }
+  }
+  printf("\n  Total blobs found: %d  (min_blob=%d, max_span=%d)\n",
+         idx, min_blob, max_span);
 
-    // ─────────────────────────────────────────────────────────────────
-    //  Step 1 — Calibration: detect 4 dark dots, compute homography
-    // ─────────────────────────────────────────────────────────────────
-    printf("=== Step 1: Calibration ===\n");
+  free(visited);
+  free(qmem);
+}
 
-    uint32_t dot_ux[4], dot_uy[4];
-    int ndots = calibrate_find_dots(pixels, w, h, dot_ux, dot_uy);
-    printf("  Detected %d/4 calibration dots\n", ndots);
+int main(int argc, char **argv) {
+  const char *path = (argc > 1) ? argv[1] : "test_images/sample_1.jpeg";
+  const char *output_path = "test_images/output.png";
 
-    if (ndots < 4) {
-        printf("  ERROR: need all 4 dots visible. Check image content.\n");
-        free(pixels);
-        camera_free_image(rgb);
-        return 1;
-    }
+  // ── Load image ───────────────────────────────────────────────────
+  int w = 0, h = 0;
+  uint8_t *rgb = camera_load_image(path, &w, &h);
+  if (!rgb) {
+    fprintf(stderr, "Error: cannot load %s\n", path);
+    return 1;
+  }
+  printf("Loaded: %s  (%d × %d)\n\n", path, w, h);
 
+  Pixel *pixels = rgb_to_pixels(rgb, w, h);
+  if (!pixels) {
+    fprintf(stderr, "Error: malloc failed\n");
+    camera_free_image(rgb);
+    return 1;
+  }
+
+  // ── Visualize all dark blobs for debugging ──────────────────────
+  draw_blob_boxes(pixels, w, h);
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Step 1 — Calibration: detect 4 dark dots, compute homography
+  // ─────────────────────────────────────────────────────────────────
+  printf("\n=== Step 1: Calibration ===\n");
+
+  uint32_t dot_ux[4], dot_uy[4];
+  int ndots = calibrate_find_dots(pixels, w, h, dot_ux, dot_uy);
+  printf("  Detected %d/4 calibration dots\n", ndots);
+
+  if (ndots >= 4) {
     float H[3][3];
     float rms;
     calibrate_solve(dot_ux, dot_uy, H, &rms);
@@ -100,43 +252,60 @@ int main(int argc, char **argv)
     printf("  [%9.5f  %9.5f  %9.5f]\n", H[2][0], H[2][1], H[2][2]);
     printf("  RMS reprojection error: %.1f mm\n\n", rms);
 
-    // ─────────────────────────────────────────────────────────────────
+    // Draw green crosshairs on the calibration dots
+    for (int i = 0; i < 4; i++)
+      draw_crosshair(pixels, w, h, (int)dot_ux[i], (int)dot_uy[i]);
+
+    // ─────────────────────────────────────────────────────────────
     //  Step 2 — Object detection: locate colored blocks
-    // ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     printf("=== Step 2: Object Detection ===\n");
 
-    static const Color colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_YELLOW};
-    static const char *names[]  = {"RED", "GREEN", "BLUE", "YELLOW"};
+    static const Color colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE,
+                                   COLOR_YELLOW};
+    static const char *names[] = {"RED", "GREEN", "BLUE", "YELLOW"};
     int obj_count = 0;
 
     for (int i = 0; i < 4; i++) {
-        DetectionResult r = color_detect_scan_pixels(pixels, w, h, colors[i]);
-        if (!r.found) {
-            printf("  %s: (none)\n", names[i]);
-            continue;
-        }
-        obj_count++;
+      DetectionResult r = color_detect_scan_pixels(pixels, w, h, colors[i]);
+      if (!r.found) {
+        printf("  %s: (none)\n", names[i]);
+        continue;
+      }
+      obj_count++;
 
-        // Pixel → mm via homography
-        float mm_x, mm_y;
-        apply_h(H, r.centroid_x, r.centroid_y, &mm_x, &mm_y);
+      float mm_x, mm_y;
+      apply_h(H, r.centroid_x, r.centroid_y, &mm_x, &mm_y);
 
-        // mm → servo angles via IK
-        ArmAngles angles = kinematics_solve_ik(mm_x, mm_y);
+      ArmAngles angles = kinematics_solve_ik(mm_x, mm_y);
 
-        printf("  %s:  pixel(%3u, %3u)  →  mm(%7.1f, %7.1f)\n",
-               names[i], r.centroid_x, r.centroid_y, mm_x, mm_y);
-        printf("         IK: base=%6.1f°  shoulder=%6.1f°  elbow=%6.1f°\n",
-               angles.base_deg, angles.shoulder_deg, angles.elbow_deg);
+      printf("  %s:  pixel(%3u, %3u)  →  mm(%7.1f, %7.1f)\n", names[i],
+             r.centroid_x, r.centroid_y, mm_x, mm_y);
+      printf("         IK: base=%6.1f°  shoulder=%6.1f°  elbow=%6.1f°\n",
+             angles.base_deg, angles.shoulder_deg, angles.elbow_deg);
+
+      // Draw white circle with color letter on the annotated image
+      draw_centroid(pixels, w, h, (int)r.centroid_x, (int)r.centroid_y,
+                    colors[i]);
     }
 
-    if (obj_count == 0) {
-        printf("  No objects detected.\n");
-    }
+    if (obj_count == 0)
+      printf("  No objects detected.\n");
 
-    // ── Cleanup ──────────────────────────────────────────────────────
-    free(pixels);
-    camera_free_image(rgb);
-    printf("\nDone.\n");
-    return 0;
+  } else {
+    printf("  ERROR: need all 4 dots visible. Check image content.\n");
+  }
+
+  // ── Save annotated output image ──────────────────────────────────
+  pixels_to_rgb(pixels, rgb, w, h);
+  if (camera_save_image(output_path, rgb, w, h))
+    printf("\nAnnotated image saved: %s\n", output_path);
+  else
+    fprintf(stderr, "Warning: failed to save %s\n", output_path);
+
+  // ── Cleanup ──────────────────────────────────────────────────────
+  free(pixels);
+  camera_free_image(rgb);
+  printf("Done.\n");
+  return 0;
 }
