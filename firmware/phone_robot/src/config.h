@@ -35,8 +35,8 @@
  *
  * FLOOD_CONTRAST — neighbour threshold for flood-fill growth.
  */
-#define SEED_CONTRAST   2
-#define FLOOD_CONTRAST  1
+#define SEED_CONTRAST 2
+#define FLOOD_CONTRAST 1
 
 /*
  * LOCAL_BRIGHT_RADIUS — half-width of local brightness window.
@@ -60,10 +60,10 @@
 #define CALIB_ABS_THRESH_DIV 3
 
 /* Shape filters relaxed for tiny blobs at low resolution */
-#define CALIB_DOT_MAX_CHROMA       20
-#define CALIB_DOT_MIN_CIRCULARITY  0.40f
-#define CALIB_DOT_MIN_ASPECT       0.40f
-#define CALIB_DOT_MIN_FILL         0.30f
+#define CALIB_DOT_MAX_CHROMA 20
+#define CALIB_DOT_MIN_CIRCULARITY 0.40f
+#define CALIB_DOT_MIN_ASPECT 0.40f
+#define CALIB_DOT_MIN_FILL 0.30f
 
 #define CALIB_DEBUG 1
 
@@ -72,19 +72,21 @@
 /*  CALIBRATE: measure your robot's reachable table area in mm   */
 /* ------------------------------------------------------------- */
 
-#define WORKSPACE_X_MM 200.0f /* Total workspace width  (mm), <-PLACEHOLDER->  \
-                               */
-#define WORKSPACE_Y_MM 150.0f /* Total workspace height (mm), <-PLACEHOLDER->  \
-                               */
+#define WORKSPACE_X_MM                                                         \
+  200.0f /* Total workspace width  (mm), <-PLACEHOLDER->                       \
+          */
+#define WORKSPACE_Y_MM                                                         \
+  150.0f /* Total workspace height (mm), <-PLACEHOLDER->                       \
+          */
 
 /* ------------------------------------------------------------- */
 /*  Arm link lengths (mm)                                        */
 /*  CALIBRATE: measure your physical arm links                   */
 /* ------------------------------------------------------------- */
 
-#define LINK1_MM 120.0f      /* Shoulder → elbow (12 cm) */
-#define LINK2_MM 200.0f      /* Elbow → wrist  (20 cm)  */
-#define GRIPPER_LENGTH_MM 90.0f  /* Gripper extension (9 cm) */
+#define LINK1_MM 120.0f             /* Shoulder → elbow pivot (mm) */
+#define LINK2_MM 200.0f             /* Elbow pivot → gripper tip (mm) */
+#define GRIPPER_LENGTH_MM 90.0f     /* (included in LINK2_MM above) */
 #define SHOULDER_Z_OFFSET_MM 100.0f /* Shoulder pivot above table (mm) */
 
 /* ------------------------------------------------------------- */
@@ -104,12 +106,17 @@
 /*  before returning.  servo_control.cpp clamps in servo-space.   */
 /* ------------------------------------------------------------- */
 
-#define SERVO_BASE_MIN -90
+/* ── Angle limits (IK-space) ──────────────────────────────────────────────
+ * These are used by the IK solver to pick a valid solution.
+ * kinematics_solve_ik() converts to servo-space before returning.
+ * servo_control.cpp clamps in servo-space independently.
+ * ────────────────────────────────────────────────────────────────────────*/
+#define SERVO_BASE_MIN -90 /* IK & servo-space identical for base */
 #define SERVO_BASE_MAX 90
-#define SERVO_SHOULDER_MIN 0     /* IK: 0° = horizontal */
-#define SERVO_SHOULDER_MAX 90    /* IK: 90° = straight up */
-#define SERVO_ELBOW_MIN -90      /* IK: -90° = bent down (toward table) */
-#define SERVO_ELBOW_MAX 0        /* IK: 0° = extended straight */
+#define SERVO_SHOULDER_MIN 0  /* IK: 0°=horizontal forward */
+#define SERVO_SHOULDER_MAX 90 /* IK: 90°=straight up (home) */
+#define SERVO_ELBOW_MIN -90   /* IK: -90°=fully bent toward table */
+#define SERVO_ELBOW_MAX 0     /* IK: 0°=fully extended */
 #define SERVO_GRIPPER_MIN -20
 #define SERVO_GRIPPER_MAX 40
 
