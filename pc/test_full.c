@@ -109,10 +109,11 @@ static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy) {
 static int dbg_flood(Pixel *pixels, int w, int h, int sx, int sy,
                      uint8_t visited[], int *qx, int *qy, int max_q,
                      int *min_x, int *max_x, int *min_y, int *max_y,
-                     int thresh, int abs_thresh, int max_span)
+                     int *out_chroma, int thresh, int abs_thresh, int max_span)
 {
   int head = 0, tail = 0, count = 0;
   *min_x = sx; *max_x = sx; *min_y = sy; *max_y = sy;
+  int chroma_sum = 0;
   qx[tail] = sx; qy[tail] = sy; tail++;
   visited[sy * w + sx] = 1;
 
@@ -121,6 +122,14 @@ static int dbg_flood(Pixel *pixels, int w, int h, int sx, int sy,
   while (head < tail) {
     int x = qx[head], y = qy[head]; head++;
     count++;
+    {
+      Pixel *p = &pixels[y * w + x];
+      int maxc = p->r > p->g ? (int)p->r : (int)p->g;
+      int minc = p->r < p->g ? (int)p->r : (int)p->g;
+      if ((int)p->b > maxc) maxc = (int)p->b;
+      if ((int)p->b < minc) minc = (int)p->b;
+      chroma_sum += maxc - minc;
+    }
     if (x < *min_x) *min_x = x;
     if (x > *max_x) *max_x = x;
     if (y < *min_y) *min_y = y;
@@ -144,6 +153,7 @@ static int dbg_flood(Pixel *pixels, int w, int h, int sx, int sy,
       tail++;
     }
   }
+  *out_chroma = count > 0 ? (chroma_sum / count) : 0;
   return count;
 }
 
@@ -157,6 +167,9 @@ static int draw_blob_boxes(Pixel *pixels, int w, int h, int abs_thresh,
 
   int min_blob = MIN_DARK_BLOB > w * h / 10000 ? MIN_DARK_BLOB : w * h / 10000;
   int max_span = (w > h ? w : h) / 8;
+  int dot_max_span = max_span / 3;
+  if (dot_max_span < 8) dot_max_span = 8;
+  int dot_min_contrast = SEED_CONTRAST;
 
   if (verbose) {
     printf("\n=== Debug: All Dark Blobs (SEED_CONTRAST=%d, FLOOD_CONTRAST=%d) ===\n",
@@ -179,17 +192,20 @@ static int draw_blob_boxes(Pixel *pixels, int w, int h, int abs_thresh,
       int flood_thresh = local_bright - FLOOD_CONTRAST;
 
       int min_x, max_x, min_y, max_y;
+      int avg_chroma = 0;
       int count = dbg_flood(pixels, w, h, x, y, visited, qx, qy, w * h,
-                            &min_x, &max_x, &min_y, &max_y,
+                            &min_x, &max_x, &min_y, &max_y, &avg_chroma,
                             flood_thresh, abs_thresh, max_span);
       if (count < min_blob) continue;
       int span_x = max_x - min_x;
       int span_y = max_y - min_y;
       int span = span_x > span_y ? span_x : span_y;
-      if (filtered_only && span > max_span) continue;
       uint32_t cx = (uint32_t)(min_x + max_x) / 2;
       uint32_t cy = (uint32_t)(min_y + max_y) / 2;
       int contrast = local_bright - seed_bright;
+      if (filtered_only && span > dot_max_span) continue;
+      if (filtered_only && contrast < dot_min_contrast) continue;
+      if (filtered_only && avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
 
       if (verbose) {
         printf("  blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d  "

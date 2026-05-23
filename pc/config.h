@@ -13,6 +13,8 @@
 #define FLOOD_CONTRAST  3      /* Flood-fill neighbour contrast threshold (relaxed) */
 #define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000 dynamically) */
 
+#define CALIB_DOT_MAX_CHROMA 12 /* Max average (max-min) allowed for dots */
+
 #define CALIB_DEBUG     1
 
 #define WORKSPACE_X_MM  200.0f

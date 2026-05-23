@@ -68,12 +68,14 @@ static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy)
 static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
                       uint8_t visited[], int *qx, int *qy, int max_q,
                       uint32_t *out_x, uint32_t *out_y, int *out_span,
-                      int thresh, int abs_thresh, int min_blob, int max_span)
+                      int *out_chroma, int thresh, int abs_thresh,
+                      int min_blob, int max_span)
 {
     int head = 0, tail = 0;
     uint32_t sum_x = 0, sum_y = 0;
     int count = 0;
     int min_x = sx, max_x = sx, min_y = sy, max_y = sy;
+    int chroma_sum = 0;
 
     qx[tail] = sx; qy[tail] = sy; tail++;
     visited[sy * w + sx] = 1;
@@ -82,6 +84,14 @@ static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
         int x = qx[head], y = qy[head]; head++;
         sum_x += (uint32_t)x; sum_y += (uint32_t)y;
         count++;
+        {
+            Pixel *p = &pixels[y * w + x];
+            int maxc = p->r > p->g ? (int)p->r : (int)p->g;
+            int minc = p->r < p->g ? (int)p->r : (int)p->g;
+            if ((int)p->b > maxc) maxc = (int)p->b;
+            if ((int)p->b < minc) minc = (int)p->b;
+            chroma_sum += maxc - minc;
+        }
         if (x < min_x) min_x = x;
         if (x > max_x) max_x = x;
         if (y < min_y) min_y = y;
@@ -117,6 +127,7 @@ static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
     *out_x = sum_x / count;
     *out_y = sum_y / count;
     *out_span = span;
+    *out_chroma = count > 0 ? (chroma_sum / count) : 0;
     return (int)count;
 }
 
@@ -152,6 +163,10 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
     int blobs[32][5];
     int nblobs = 0;
 
+    int dot_max_span = max_span / 3;
+    if (dot_max_span < 8) dot_max_span = 8;
+    int dot_min_contrast = SEED_CONTRAST;
+
     for (int y = 0; y < h && nblobs < 32; y++) {
         for (int x = 0; x < w && nblobs < 32; x++) {
             if (visited[y * w + x]) continue;
@@ -164,19 +179,24 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
             uint32_t cx, cy;
             int flood_thresh = local_bright - FLOOD_CONTRAST;
             int span;
+            int avg_chroma = 0;
             int sz = flood_blob(pixels, w, h, x, y, visited, qx, qy, w * h,
-                                &cx, &cy, &span, flood_thresh, abs_thresh,
-                                min_blob, max_span);
+                                &cx, &cy, &span, &avg_chroma,
+                                flood_thresh, abs_thresh, min_blob, max_span);
             if (sz > 0) {
+                int contrast = local_bright - seed_bright;
+                if (span > dot_max_span) continue;
+                if (contrast < dot_min_contrast) continue;
+                if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
                 blobs[nblobs][0] = (int)cx;
                 blobs[nblobs][1] = (int)cy;
                 blobs[nblobs][2] = sz;
                 blobs[nblobs][3] = span;
-                blobs[nblobs][4] = local_bright - seed_bright;
+                blobs[nblobs][4] = contrast;
 #if CALIB_DEBUG
-                printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d\n",
+                printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d chroma=%d\n",
                        nblobs, (unsigned)cx, (unsigned)cy, span, sz,
-                       local_bright - seed_bright);
+                       contrast, avg_chroma);
 #endif
                 nblobs++;
             }
