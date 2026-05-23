@@ -9,11 +9,17 @@
 #define MIN_BLOB_SIZE   50
 
 /* Calibration dot detection: contrast-based (no absolute threshold) */
-#define SEED_CONTRAST   3      /* Seed pixel contrast threshold (must be this much darker) */
-#define FLOOD_CONTRAST  3      /* Flood-fill neighbour contrast threshold (relaxed) */
+#define SEED_CONTRAST   2      /* Seed pixel contrast threshold (must be this much darker) */
+#define FLOOD_CONTRAST  2      /* Flood-fill neighbour contrast threshold (relaxed) */
 #define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000 dynamically) */
 
-#define CALIB_DOT_MAX_CHROMA 12 /* Max average (max-min) allowed for dots */
+#define CALIB_DOT_MAX_CHROMA 18 /* Max average (max-min) allowed for dots */
+
+/* abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV
+   Lower divisor = more pixels qualify as "dark enough" */
+#ifndef CALIB_ABS_THRESH_DIV
+#define CALIB_ABS_THRESH_DIV 2
+#endif
 
 #define CALIB_DEBUG     1
 

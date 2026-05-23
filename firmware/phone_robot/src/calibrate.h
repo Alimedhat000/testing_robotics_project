@@ -53,6 +53,10 @@ int  calibrate_find_dots(Pixel *pixels, int w, int h,
                           uint32_t out_ux[CALIB_N_POINTS],
                           uint32_t out_uy[CALIB_N_POINTS]);
 
+int  calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
+                                 uint32_t out_ux[CALIB_N_POINTS],
+                                 uint32_t out_uy[CALIB_N_POINTS]);
+
 /**
  * @brief Solve homography via DLT (Direct Linear Transform).
  * Builds an 8×8 system from 4 pixel→mm point pairs and solves via

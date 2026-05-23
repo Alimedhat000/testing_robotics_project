@@ -125,7 +125,7 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
         if (b < min_bright) min_bright = b;
         if (b > max_bright) max_bright = b;
     }
-    int abs_thresh = min_bright + (max_bright - min_bright) / 3;
+    int abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV;
 
 #if CALIB_DEBUG
     printf("[CALIB] Brightness range %d..%d, abs_thresh=%d\n",
@@ -336,4 +336,215 @@ void calibrate_reproject(const float H[3][3], const uint32_t ux[CALIB_N_POINTS],
     sum += err * err;
   }
   printf("  RMS reprojection error: %.1f mm\n", sqrtf(sum / 4.0f));
+}
+
+// ── RGB565 calibration path ────────────────────────────────────────
+
+static inline int brightness_rgb565(uint16_t p) {
+    int r = (p >> 11) & 0x1F;
+    int g = (p >>  5) & 0x3F;
+    int b = p & 0x1F;
+    return ((r << 3) + (g << 2) + (b << 3)) / 3;
+}
+
+static int local_brightness_rgb565(const uint16_t *rgb565, int w, int h,
+                                    int cx, int cy) {
+    int sum = 0, n = 0;
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++) {
+            int px = cx + dx, py = cy + dy;
+            if (px < 0 || px >= w || py < 0 || py >= h) continue;
+            sum += brightness_rgb565(rgb565[py * w + px]);
+            n++;
+        }
+    return n > 0 ? sum / n : 255;
+}
+
+static int flood_blob_rgb565(const uint16_t *rgb565, int w, int h,
+                              int sx, int sy, uint8_t visited[],
+                              int *qx, int *qy, int max_q,
+                              uint32_t *out_x, uint32_t *out_y, int *out_span,
+                              int *out_chroma, int thresh, int abs_thresh,
+                              int min_blob, int max_span) {
+    int head = 0, tail = 0;
+    uint32_t sum_x = 0, sum_y = 0;
+    int count = 0;
+    int min_x = sx, max_x = sx, min_y = sy, max_y = sy;
+    int chroma_sum = 0;
+
+    qx[tail] = sx; qy[tail] = sy; tail++;
+    visited[sy * w + sx] = 1;
+
+    while (head < tail) {
+        int x = qx[head], y = qy[head]; head++;
+        sum_x += (uint32_t)x;
+        sum_y += (uint32_t)y;
+        count++;
+        {
+            uint16_t p = rgb565[y * w + x];
+            int r = (p >> 11) & 0x1F;
+            int g = (p >>  5) & 0x3F;
+            int b = p & 0x1F;
+            int maxc = r > g ? r : g; if (b > maxc) maxc = b;
+            int minc = r < g ? r : g; if (b < minc) minc = b;
+            chroma_sum += maxc - minc;
+        }
+        if (x < min_x) min_x = x;
+        if (x > max_x) max_x = x;
+        if (y < min_y) min_y = y;
+        if (y > max_y) max_y = y;
+
+        if ((max_x - min_x) > max_span || (max_y - min_y) > max_span) {
+            for (int i = 0; i < tail; i++)
+                visited[qy[i] * w + qx[i]] = 0;
+            visited[sy * w + sx] = 1;
+            return 0;
+        }
+
+        static const int dx[] = {0, 0, -1, 1};
+        static const int dy[] = {-1, 1, 0, 0};
+        for (int d = 0; d < 4; d++) {
+            int nx = x + dx[d], ny = y + dy[d];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            if (visited[ny * w + nx]) continue;
+            int nb = brightness_rgb565(rgb565[ny * w + nx]);
+            if (nb >= thresh) continue;
+            if (nb >= abs_thresh) continue;
+            visited[ny * w + nx] = 1;
+            if (tail >= max_q) continue;
+            qx[tail] = nx; qy[tail] = ny;
+            tail++;
+        }
+    }
+
+    if (count < min_blob) return 0;
+    int span_x = max_x - min_x;
+    int span_y = max_y - min_y;
+    int span = span_x > span_y ? span_x : span_y;
+    if (span > max_span) return 0;
+    *out_x = sum_x / count;
+    *out_y = sum_y / count;
+    *out_span = span;
+    *out_chroma = count > 0 ? (chroma_sum / count) : 0;
+    return count;
+}
+
+int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
+                                uint32_t out_ux[CALIB_N_POINTS],
+                                uint32_t out_uy[CALIB_N_POINTS]) {
+    int min_bright = 255, max_bright = 0;
+    for (int i = 0; i < w * h; i++) {
+        int b = brightness_rgb565(rgb565[i]);
+        if (b < min_bright) min_bright = b;
+        if (b > max_bright) max_bright = b;
+    }
+    int abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV;
+
+#if CALIB_DEBUG
+    printf("[CALIB_RGB565] Brightness range %d..%d, abs_thresh=%d\n",
+           min_bright, max_bright, abs_thresh);
+#endif
+
+    uint8_t *visited = (uint8_t *)calloc((size_t)w * h, 1);
+    int *qmem = (int *)malloc((size_t)w * h * 2 * sizeof(int));
+    if (!visited || !qmem) { free(visited); free(qmem); return 0; }
+
+    int *qx = qmem, *qy = qmem + (size_t)w * h;
+
+    int min_blob = MIN_DARK_BLOB > w * h / 10000
+                   ? MIN_DARK_BLOB : w * h / 10000;
+    int max_span = (w > h ? w : h) / 8;
+
+    int blobs[32][5];
+    int nblobs = 0;
+
+    int dot_max_span = max_span / 3;
+    if (dot_max_span < 8) dot_max_span = 8;
+    int dot_min_contrast = SEED_CONTRAST;
+
+    for (int y = 0; y < h && nblobs < 32; y++) {
+        for (int x = 0; x < w && nblobs < 32; x++) {
+            if (visited[y * w + x]) continue;
+
+            int seed_bright = brightness_rgb565(rgb565[y * w + x]);
+            if (seed_bright > abs_thresh) continue;
+            int local_bright = local_brightness_rgb565(rgb565, w, h, x, y);
+            int seed_thresh = local_bright - SEED_CONTRAST;
+            if (seed_bright > seed_thresh) continue;
+
+            uint32_t cx, cy;
+            int flood_thresh = local_bright - FLOOD_CONTRAST;
+            int span;
+            int avg_chroma = 0;
+            int sz = flood_blob_rgb565(rgb565, w, h, x, y, visited, qx, qy,
+                                        w * h, &cx, &cy, &span, &avg_chroma,
+                                        flood_thresh, abs_thresh, min_blob, max_span);
+            if (sz > 0) {
+                int contrast = local_bright - seed_bright;
+                if (span > dot_max_span) continue;
+                if (contrast < dot_min_contrast) continue;
+                if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+                blobs[nblobs][0] = (int)cx;
+                blobs[nblobs][1] = (int)cy;
+                blobs[nblobs][2] = sz;
+                blobs[nblobs][3] = span;
+                blobs[nblobs][4] = contrast;
+#if CALIB_DEBUG
+                printf("[CALIB_RGB565] blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d chroma=%d\n",
+                       nblobs, (unsigned)cx, (unsigned)cy, span, sz, contrast, avg_chroma);
+#endif
+                nblobs++;
+            }
+        }
+    }
+
+    free(visited); free(qmem);
+
+    if (nblobs < 4) {
+        for (int i = 0; i < nblobs && i < 4; i++) {
+            out_ux[i] = (uint32_t)blobs[i][0];
+            out_uy[i] = (uint32_t)blobs[i][1];
+        }
+        return nblobs < 4 ? nblobs : 4;
+    }
+
+    for (int i = 0; i < nblobs - 1; i++)
+        for (int j = i + 1; j < nblobs; j++)
+            if (blobs[j][4] > blobs[i][4]) {
+                int t[5]; memcpy(t, blobs[i], sizeof(t));
+                memcpy(blobs[i], blobs[j], sizeof(t));
+                memcpy(blobs[j], t, sizeof(t));
+            }
+
+    int used[32] = {0};
+    int yi = 0;
+    for (int i = 1; i < nblobs; i++)
+        if (blobs[i][1] < blobs[yi][1]) yi = i;
+    out_ux[0] = (uint32_t)blobs[yi][0]; out_uy[0] = (uint32_t)blobs[yi][1];
+    used[yi] = 1;
+
+    int xi_min = -1;
+    for (int i = 0; i < nblobs; i++) {
+        if (used[i]) continue;
+        if (xi_min < 0 || blobs[i][0] < blobs[xi_min][0]) xi_min = i;
+    }
+    out_ux[1] = (uint32_t)blobs[xi_min][0]; out_uy[1] = (uint32_t)blobs[xi_min][1];
+    used[xi_min] = 1;
+
+    int xi_max = -1;
+    for (int i = 0; i < nblobs; i++) {
+        if (used[i]) continue;
+        if (xi_max < 0 || blobs[i][0] > blobs[xi_max][0]) xi_max = i;
+    }
+    out_ux[2] = (uint32_t)blobs[xi_max][0]; out_uy[2] = (uint32_t)blobs[xi_max][1];
+    used[xi_max] = 1;
+
+    int yi_max = -1;
+    for (int i = 0; i < nblobs; i++) {
+        if (used[i]) continue;
+        if (yi_max < 0 || blobs[i][1] > blobs[yi_max][1]) yi_max = i;
+    }
+    out_ux[3] = (uint32_t)blobs[yi_max][0]; out_uy[3] = (uint32_t)blobs[yi_max][1];
+
+    return 4;
 }

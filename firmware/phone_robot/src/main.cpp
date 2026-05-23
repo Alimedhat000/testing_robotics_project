@@ -198,9 +198,9 @@ static void handleProcess() {
   Serial.printf("[PROC] Brightness %d..%d  abs_thresh=%d\n", mn, mx,
                 mn + (mx - mn) / 3);
 
-  // Calibration
+  // Calibration — on RGB565 directly (saves ~230KB vs RGB888 expansion)
   uint32_t du[4], dv[4];
-  int ndots = calibrate_find_dots(pixels, IMG_WIDTH, IMG_HEIGHT, du, dv);
+  int ndots = calibrate_find_dots_rgb565((uint16_t *)decode_buf, IMG_WIDTH, IMG_HEIGHT, du, dv);
   Serial.printf("[PROC] Dots: %d/4\n", ndots);
   for (int i = 0; i < ndots; i++)
     Serial.printf("  Dot %d: pixel(%u,%u)\n", i, du[i], dv[i]);

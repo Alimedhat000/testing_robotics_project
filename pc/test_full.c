@@ -319,7 +319,7 @@ int main(int argc, char **argv) {
   int min_bright = 0;
   int max_bright = 0;
   brightness_stats(pixels, w, h, &min_bright, &max_bright);
-  int abs_thresh = min_bright + (max_bright - min_bright) / 3;
+  int abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV;
   printf("Brightness range: %d..%d  abs_thresh=%d\n", min_bright, max_bright,
          abs_thresh);
 
@@ -341,14 +341,43 @@ int main(int argc, char **argv) {
     free(dbg_pixels);
   }
 
+  // ── Convert Pixel* to uint16_t* RGB565 for testing ──────────────
+  uint16_t *rgb565 = (uint16_t *)malloc((size_t)w * h * sizeof(uint16_t));
+  if (rgb565) {
+    for (int i = 0; i < w * h; i++)
+      rgb565[i] = (uint16_t)(((pixels[i].r >> 3) << 11) |
+                             ((pixels[i].g >> 2) << 5)  |
+                              (pixels[i].b >> 3));
+  }
+
   // ─────────────────────────────────────────────────────────────────
-  //  Step 1 — Calibration: detect 4 dark dots, compute homography
+  //  Step 1a — Calibration RGB888 (existing Pixel path)
   // ─────────────────────────────────────────────────────────────────
-  printf("\n=== Step 1: Calibration ===\n");
+  printf("\n=== Step 1: Calibration (RGB888) ===\n");
 
   uint32_t dot_ux[4], dot_uy[4];
   int ndots = calibrate_find_dots(pixels, w, h, dot_ux, dot_uy);
   printf("  Detected %d/4 calibration dots\n", ndots);
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Step 1b — Calibration RGB565 (compare results)
+  // ─────────────────────────────────────────────────────────────────
+  printf("\n=== Step 1b: Calibration (RGB565) ===\n");
+  if (rgb565) {
+    uint32_t dot_ux5[4], dot_uy5[4];
+    int ndots5 = calibrate_find_dots_rgb565(rgb565, w, h, dot_ux5, dot_uy5);
+    printf("  Detected %d/4 calibration dots\n", ndots5);
+    if (ndots == ndots5) {
+      int match = 1;
+      for (int i = 0; i < ndots && i < 4; i++)
+        if (dot_ux[i] != dot_ux5[i] || dot_uy[i] != dot_uy5[i]) match = 0;
+      printf("  RGB888 vs RGB565: %s\n", match ? "MATCH" : "DIFFER (centroids shifted)");
+    } else {
+      printf("  RGB888 vs RGB565: DIFFER (%d vs %d dots)\n", ndots, ndots5);
+    }
+  } else {
+    printf("  (skipped — malloc failed)\n");
+  }
 
   dbg_pixels = dup_pixels(pixels, w, h);
   if (dbg_pixels) {
@@ -433,6 +462,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Warning: failed to save %s\n", output_path);
 
   // ── Cleanup ──────────────────────────────────────────────────────
+  free(rgb565);
   free(pixels);
   camera_free_image(rgb);
   printf("Done.\n");
