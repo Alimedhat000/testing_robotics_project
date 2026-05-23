@@ -206,6 +206,15 @@ static int draw_blob_boxes(Pixel *pixels, int w, int h, int abs_thresh,
       if (filtered_only && span > dot_max_span) continue;
       if (filtered_only && contrast < dot_min_contrast) continue;
       if (filtered_only && avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+      // Shape filters (match calibrate.c)
+      if (filtered_only) {
+        int bbox_w = span_x + 1, bbox_h = span_y + 1;
+        float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
+                       (float)(bbox_w > bbox_h ? bbox_w : bbox_h);
+        float fill = (float)count / (float)(bbox_w * bbox_h);
+        if (aspect < CALIB_DOT_MIN_ASPECT) continue;
+        if (fill < CALIB_DOT_MIN_FILL) continue;
+      }
 
       if (verbose) {
         printf("  blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d  "
@@ -297,6 +306,99 @@ static void output_dir_from_path(const char *path, char *out_dir,
   out_dir[len] = '\0';
 }
 
+// ── 5×7 bitmap font for debug labels ─────────────────────────────
+// Each entry: 7 rows, each row is a 5-bit mask (MSB = leftmost pixel)
+static const uint8_t font_T[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+static const uint8_t font_L[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+static const uint8_t font_R[7] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x11};
+static const uint8_t font_B[7] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
+static const uint8_t * font_map[128] = {['T'] = font_T, ['L'] = font_L, ['R'] = font_R, ['B'] = font_B};
+
+static void draw_label(Pixel *pixels, int w, int h, int cx, int cy,
+                       char ch, uint8_t cr, uint8_t cg, uint8_t cb) {
+  const uint8_t *bm = (ch >= 0 && ch < 128) ? font_map[(unsigned char)ch] : NULL;
+  if (!bm) return;
+  int ox = cx - 2, oy = cy - 8;
+  for (int row = 0; row < 7; row++)
+    for (int col = 0; col < 5; col++)
+      if (bm[row] & (0x10 >> col)) {
+        int px = ox + col, py = oy + row;
+        if (px >= 0 && px < w && py >= 0 && py < h) {
+          pixels[py * w + px].r = cr;
+          pixels[py * w + px].g = cg;
+          pixels[py * w + px].b = cb;
+        }
+      }
+}
+
+// ── Seed pixel debug map ─────────────────────────────────────────
+// Marks every pixel that passes the seed criteria in red on grayscale
+static int save_seed_map(const Pixel *pixels, int w, int h, int abs_thresh,
+                         uint8_t *rgb, const char *path) {
+  // First draw the grayscale image
+  for (int i = 0; i < w * h; i++) {
+    int b = brightness(&pixels[i]);
+    rgb[i * 3 + 0] = (uint8_t)b;
+    rgb[i * 3 + 1] = (uint8_t)b;
+    rgb[i * 3 + 2] = (uint8_t)b;
+  }
+  // Then highlight seed pixels
+  int nseeds = 0;
+  for (int y = 2; y < h - 2; y++)
+    for (int x = 2; x < w - 2; x++) {
+      int seed_b = brightness(&pixels[y * w + x]);
+      if (seed_b > abs_thresh) continue;
+      int local_b = local_brightness(pixels, w, h, x, y);
+      if (seed_b > local_b - SEED_CONTRAST) continue;
+      // Mark with red
+      rgb[(y * w + x) * 3 + 0] = 255;
+      rgb[(y * w + x) * 3 + 1] = 0;
+      rgb[(y * w + x) * 3 + 2] = 0;
+      nseeds++;
+    }
+  printf("  Seed pixels: %d\n", nseeds);
+  return camera_save_image(path, rgb, w, h);
+}
+
+// ── Draw 4 selected calibration dots with T/L/R/B labels ─────────
+static void draw_selected_dots(Pixel *pixels, int w, int h,
+                               const uint32_t du[4], const uint32_t dv[4]) {
+  // Colors: Top=cyan, Left=red, Right=blue, Bottom=yellow
+  const uint8_t colors[4][3] = {{0,255,255}, {255,0,0}, {0,100,255}, {255,255,0}};
+  const char labels[4] = {'T', 'L', 'R', 'B'};
+  for (int i = 0; i < 4; i++) {
+    int cx = (int)du[i], cy = (int)dv[i];
+    // Large crosshair
+    for (int d = -10; d <= 10; d++) {
+      int px = cx + d, py = cy;
+      if (px >= 0 && px < w && py >= 0 && py < h) {
+        pixels[py * w + px].r = colors[i][0];
+        pixels[py * w + px].g = colors[i][1];
+        pixels[py * w + px].b = colors[i][2];
+      }
+      px = cx; py = cy + d;
+      if (px >= 0 && px < w && py >= 0 && py < h) {
+        pixels[py * w + px].r = colors[i][0];
+        pixels[py * w + px].g = colors[i][1];
+        pixels[py * w + px].b = colors[i][2];
+      }
+    }
+    // Outer ring
+    for (int dy = -12; dy <= 12; dy++)
+      for (int dx = -12; dx <= 12; dx++) {
+        int r2 = dx*dx + dy*dy;
+        if (r2 < 120 || r2 > 150) continue;
+        int px = cx + dx, py = cy + dy;
+        if (px >= 0 && px < w && py >= 0 && py < h) {
+          pixels[py * w + px].r = colors[i][0];
+          pixels[py * w + px].g = colors[i][1];
+          pixels[py * w + px].b = colors[i][2];
+        }
+      }
+    draw_label(pixels, w, h, cx, cy, labels[i], colors[i][0], colors[i][1], colors[i][2]);
+  }
+}
+
 int main(int argc, char **argv) {
   const char *path = (argc > 1) ? argv[1] : "pc/test_images/sample_1.jpeg";
 
@@ -341,6 +443,11 @@ int main(int argc, char **argv) {
     free(dbg_pixels);
   }
 
+  // ── Debug: seed pixels ──────────────────────────────────────────
+  snprintf(debug_path, sizeof(debug_path), "%s/debug_03_seed_pixels.png",
+           out_dir);
+  save_seed_map(pixels, w, h, abs_thresh, rgb, debug_path);
+
   // ── Convert Pixel* to uint16_t* RGB565 for testing ──────────────
   uint16_t *rgb565 = (uint16_t *)malloc((size_t)w * h * sizeof(uint16_t));
   if (rgb565) {
@@ -381,7 +488,7 @@ int main(int argc, char **argv) {
 
   dbg_pixels = dup_pixels(pixels, w, h);
   if (dbg_pixels) {
-    snprintf(debug_path, sizeof(debug_path), "%s/debug_03_filtered_blobs.png",
+    snprintf(debug_path, sizeof(debug_path), "%s/debug_04_filtered_blobs.png",
              out_dir);
     draw_blob_boxes(dbg_pixels, w, h, abs_thresh, 1, 0);
     pixels_to_rgb(dbg_pixels, rgb, w, h);
@@ -405,6 +512,17 @@ int main(int argc, char **argv) {
     // Draw green crosshairs on the calibration dots
     for (int i = 0; i < 4; i++)
       draw_crosshair(pixels, w, h, (int)dot_ux[i], (int)dot_uy[i]);
+
+    // ── Debug: selected dots with T/L/R/B labels ───────────
+    Pixel *dots_dbg = dup_pixels(pixels, w, h);
+    if (dots_dbg) {
+      draw_selected_dots(dots_dbg, w, h, dot_ux, dot_uy);
+      snprintf(debug_path, sizeof(debug_path), "%s/debug_05_selected_dots.png",
+               out_dir);
+      pixels_to_rgb(dots_dbg, rgb, w, h);
+      camera_save_image(debug_path, rgb, w, h);
+      free(dots_dbg);
+    }
   } else {
     printf("  ERROR: need all 4 dots visible. Check image content.\n");
   }
@@ -449,7 +567,7 @@ int main(int argc, char **argv) {
     printf("  No objects detected.\n");
 
   // ── Save annotated output image ──────────────────────────────────
-  snprintf(debug_path, sizeof(debug_path), "%s/debug_04_calib_dots.png",
+  snprintf(debug_path, sizeof(debug_path), "%s/debug_06_calib_dots.png",
            out_dir);
   pixels_to_rgb(pixels, rgb, w, h);
   camera_save_image(debug_path, rgb, w, h);

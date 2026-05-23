@@ -30,6 +30,9 @@
 #define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000) */
 
 #define CALIB_DOT_MAX_CHROMA 18 /* Max average (max-min) allowed for dots */
+#define CALIB_DOT_MIN_CIRCULARITY 0.60f /* Min circularity 4π·area/perim² — rejects shadows/creases */
+#define CALIB_DOT_MIN_ASPECT 0.40f      /* Min aspect ratio (small/large bbox side) — rejects elongated shadows */
+#define CALIB_DOT_MIN_FILL 0.35f        /* Min fill ratio (area/bbox_area) — rejects sparse/porous blobs */
 #define CALIB_ABS_THRESH_DIV 2  /* abs_thresh = min + (range / div) */
 
 #define CALIB_DEBUG     1

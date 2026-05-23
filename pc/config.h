@@ -15,6 +15,12 @@
 
 #define CALIB_DOT_MAX_CHROMA 18 /* Max average (max-min) allowed for dots */
 
+/* Circularity = 4π·area / perimeter².  A perfect circle = 1.0, dots ≈ 0.6–0.9,
+   shadows/creases ≪ 0.4. */
+#define CALIB_DOT_MIN_CIRCULARITY 0.60f /* Min circularity 4π·area/perim² — rejects shadows/creases */
+#define CALIB_DOT_MIN_ASPECT 0.40f      /* Min aspect ratio (small/large bbox side) — rejects elongated shadows */
+#define CALIB_DOT_MIN_FILL 0.35f        /* Min fill ratio (area/bbox_area) — rejects sparse/porous blobs */
+
 /* abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV
    Lower divisor = more pixels qualify as "dark enough" */
 #ifndef CALIB_ABS_THRESH_DIV
