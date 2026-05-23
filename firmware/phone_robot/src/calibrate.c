@@ -11,6 +11,18 @@
 static float CAM_H[3][3];
 static bool  calibrated = false;
 
+/*
+ * Calibration dot layout (robot mm coords, origin = arm base):
+ *
+ *        top  (  0, +100)
+ *        left (-150,   0)   right (+150,   0)
+ *        bot  (  0, -100)
+ *
+ * In image space the dots form a perspective-distorted quadrilateral.
+ * We assign roles by finding the convex hull centroid then sorting by
+ * angle — this is robust to any camera angle/tilt.
+ */
+
 // ── NVS persistence bridge (implemented in main.cpp as C++) ─────
 extern bool calibrate_nvs_load(float H[3][3]);
 extern void calibrate_nvs_save(const float H[3][3]);
@@ -45,28 +57,29 @@ void calibrate_apply(uint32_t px, uint32_t py, float *mm_x, float *mm_y)
     *mm_y = (CAM_H[1][0] * u + CAM_H[1][1] * v + CAM_H[1][2]) / w;
 }
 
-// ── Brightness = simple luminance (avg) ─────────────────────────────
+/* ── Brightness = simple luminance (avg) ─────────────────────────── */
 static inline int brightness(const Pixel *p)
 {
     return ((int)p->r + (int)p->g + (int)p->b) / 3;
 }
 
-// ── Average brightness in a (2*R+1)×(2*R+1) neighbourhood ─────
+/* ── Average brightness in a (2*R+1)×(2*R+1) neighbourhood ───── */
 static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy)
 {
     int sum = 0, n = 0;
     int r = LOCAL_BRIGHT_RADIUS;
-    for (int dy = -r; dy <= r; dy++)
+    for (int dy = -r; dy <= r; dy++) {
         for (int dx = -r; dx <= r; dx++) {
             int px = cx + dx, py = cy + dy;
             if (px < 0 || px >= w || py < 0 || py >= h) continue;
             sum += brightness(&pixels[py * w + px]);
             n++;
         }
+    }
     return n > 0 ? sum / n : 255;
 }
 
-// ── Flood-fill using contrast-based threshold ───────────────────────
+/* ── Flood-fill: contrast-based, returns pixel count ─────────────── */
 static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
                       uint8_t visited[], int *qx, int *qy, int max_q,
                       uint32_t *out_x, uint32_t *out_y, int *out_span,
@@ -155,26 +168,45 @@ static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
 
 /* ── Role assignment: angle-sort around centroid ─────────────────────
  *
- * Robust to perspective & camera tilt. Computes centroid of candidates,
- * sorts by atan2 angle, maps CW order (top, right, bottom, left) to
- * CALIB_MM role indices (0=top, 1=left, 2=right, 3=bottom).
+ * The four dots form a diamond in image space.  After perspective the
+ * diamond is a general quadrilateral, but the cyclic angle order from
+ * the centroid is preserved.  We compute the centroid of the four
+ * candidate blobs, sort by atan2, then match the resulting order to
+ * the expected geometric roles.
+ *
+ * Expected angle order (from image centroid, 0 = right, CCW+):
+ *   top    ≈ +90°  (smallest image-y, most negative dy in screen coords)
+ *   left   ≈ +180°
+ *   bottom ≈ -90° (≈ 270°)
+ *   right  ≈   0°
+ *
+ * We find the blob with the smallest image-y (= "top") to anchor the
+ * rotation, then assign roles clockwise: top -> right -> bottom -> left.
  */
 static void assign_roles(int blobs[][7], int n,
                          uint32_t out_ux[4], uint32_t out_uy[4])
 {
+    /* centroid of the candidate set */
     float cx = 0, cy = 0;
     for (int i = 0; i < n; i++) { cx += blobs[i][0]; cy += blobs[i][1]; }
     cx /= n; cy /= n;
 
+    /* compute angle of each blob from centroid */
     float angle[32];
     for (int i = 0; i < n; i++)
         angle[i] = atan2f((float)(blobs[i][1] - cy),
                           (float)(blobs[i][0] - cx));
 
+    /* find blob with smallest y (top in image = most negative screen-y) */
     int top_i = 0;
     for (int i = 1; i < n; i++)
         if (blobs[i][1] < blobs[top_i][1]) top_i = i;
 
+    /*
+     * Sort all blobs by angle clockwise from the top blob's angle.
+     * Clockwise in image coords = decreasing angle (y-axis points down).
+     * We want order: top, right, bottom, left  (CW in image).
+     */
     float anchor = angle[top_i];
     float rel[32];
     int order[32];
@@ -184,6 +216,7 @@ static void assign_roles(int blobs[][7], int n,
         while (rel[i] < 0)           rel[i] += 2.0f * 3.14159f;
         while (rel[i] >= 2*3.14159f) rel[i] -= 2.0f * 3.14159f;
     }
+    /* insertion sort ascending by rel angle (CW from top) */
     for (int i = 1; i < n; i++) {
         int   ki = order[i]; float rv = rel[ki];
         int j = i - 1;
@@ -191,7 +224,11 @@ static void assign_roles(int blobs[][7], int n,
         order[j+1] = ki;
     }
 
-    int role_map[4] = {0, 2, 3, 1};
+    /*
+     * The first 4 in CW order map to: top(0), right(2), bottom(3), left(1)
+     * i.e. out_ux[0]=top, [1]=left, [2]=right, [3]=bottom
+     */
+    int role_map[4] = {0, 2, 3, 1}; /* CW slot -> CALIB_MM role index */
     for (int slot = 0; slot < 4; slot++) {
         int role = role_map[slot];
         int bi   = order[slot];
@@ -213,13 +250,12 @@ static void assign_roles(int blobs[][7], int n,
 #endif
 }
 
-// ── Detect 4 calibration dots by contrast-based flood-fill ─────────────
+/* ── Main entry: find 4 calibration dots ─────────────────────────── */
 int calibrate_find_dots(Pixel *pixels, int w, int h,
                          uint32_t out_ux[CALIB_N_POINTS],
                          uint32_t out_uy[CALIB_N_POINTS])
 {
-    int min_bright = 255;
-    int max_bright = 0;
+    int min_bright = 255, max_bright = 0;
     for (int i = 0; i < w * h; i++) {
         int b = brightness(&pixels[i]);
         if (b < min_bright) min_bright = b;
@@ -233,21 +269,23 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
 #endif
 
     uint8_t *visited = (uint8_t *)ps_calloc((size_t)w * h, 1);
-    int *qmem = (int *)ps_malloc((size_t)w * h * 2 * sizeof(int));
+    int     *qmem    = (int *)ps_malloc((size_t)w * h * 2 * sizeof(int));
     if (!visited || !qmem) { free(visited); free(qmem); return 0; }
-
     int *qx = qmem, *qy = qmem + (size_t)w * h;
 
-    int min_blob = MIN_DARK_BLOB > w * h / 10000
-                   ? MIN_DARK_BLOB : w * h / 10000;
-    int max_span = (w > h ? w : h) / 8;
-
-    int blobs[32][7];
-    int nblobs = 0;
-
+    int min_blob     = MIN_DARK_BLOB > w * h / 10000
+                       ? MIN_DARK_BLOB : w * h / 10000;
+    int max_span     = (w > h ? w : h) / 8;
     int dot_max_span = max_span / 3;
     if (dot_max_span < 8) dot_max_span = 8;
     int dot_min_contrast = SEED_CONTRAST;
+
+    /*
+     * blobs[][7]: cx, cy, size, span, contrast, score, reject_stage
+     * We keep up to 32 raw candidates; later pick best 4.
+     */
+    int blobs[32][7];
+    int nblobs = 0;
 
     for (int y = 0; y < h && nblobs < 32; y++) {
         for (int x = 0; x < w && nblobs < 32; x++) {
@@ -255,8 +293,7 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
             int seed_bright = brightness(&pixels[y * w + x]);
             if (seed_bright > abs_thresh) continue;
             int local_bright = local_brightness(pixels, w, h, x, y);
-            int seed_thresh = local_bright - SEED_CONTRAST;
-            if (seed_bright > seed_thresh) continue;
+            if (seed_bright > local_bright - SEED_CONTRAST) continue;
 
             uint32_t cx, cy;
             int flood_thresh = local_bright - FLOOD_CONTRAST;
@@ -268,19 +305,20 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
             if (sz <= 0) continue;
 
             int contrast = local_bright - seed_bright;
-            if (span     > dot_max_span)           continue;
-            if (contrast < dot_min_contrast)       continue;
-            if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+            if (span     > dot_max_span)               continue;
+            if (contrast < dot_min_contrast)           continue;
+            if (avg_chroma > CALIB_DOT_MAX_CHROMA)     continue;
 
-            float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter + 1);
-            if (circ < CALIB_DOT_MIN_CIRCULARITY)  continue;
+            float circ   = 4.0f * 3.14159f * sz /
+                           (float)(perimeter * perimeter + 1);
+            if (circ < CALIB_DOT_MIN_CIRCULARITY)      continue;
 
             float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
                            (float)(bbox_w > bbox_h ? bbox_w : bbox_h + 1);
-            if (aspect < CALIB_DOT_MIN_ASPECT)     continue;
+            if (aspect < CALIB_DOT_MIN_ASPECT)         continue;
 
             float fill = (float)sz / (float)(bbox_w * bbox_h + 1);
-            if (fill < CALIB_DOT_MIN_FILL)         continue;
+            if (fill < CALIB_DOT_MIN_FILL)             continue;
 
             int score = (int)(contrast * circ * circ * aspect * fill * 10000 + 0.5f);
 
@@ -312,7 +350,7 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
         return nblobs < 4 ? nblobs : 4;
     }
 
-    // Sort by composite score descending
+    /* Sort descending by composite score */
     for (int i = 0; i < nblobs - 1; i++)
         for (int j = i + 1; j < nblobs; j++)
             if (blobs[j][5] > blobs[i][5]) {
@@ -327,8 +365,7 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
     return 4;
 }
 
-// ── RGB565 calibration path (operates on uint16_t*, saves ~230KB vs RGB888) ──
-
+/* ── RGB565 helpers ───────────────────────────────────────────────── */
 static inline int brightness_rgb565(uint16_t p) {
     int r = (p >> 11) & 0x1F;
     int g = (p >>  5) & 0x3F;
@@ -443,46 +480,59 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
     if (!visited || !qmem) { free(visited); free(qmem); return 0; }
 
     int *qx = qmem, *qy = qmem + (size_t)w * h;
-    int min_blob = MIN_DARK_BLOB > w * h / 10000 ? MIN_DARK_BLOB : w * h / 10000;
-    int max_span = (w > h ? w : h) / 8;
-    int blobs[32][7], nblobs = 0;
-    int dot_max_span = max_span / 3; if (dot_max_span < 8) dot_max_span = 8;
 
-    for (int y = 0; y < h && nblobs < 32; y++)
+    int min_blob     = MIN_DARK_BLOB > w * h / 10000
+                       ? MIN_DARK_BLOB : w * h / 10000;
+    int max_span     = (w > h ? w : h) / 8;
+    int dot_max_span = max_span / 3;
+    if (dot_max_span < 8) dot_max_span = 8;
+    int dot_min_contrast = SEED_CONTRAST;
+
+    int blobs[32][7];
+    int nblobs = 0;
+
+    for (int y = 0; y < h && nblobs < 32; y++) {
         for (int x = 0; x < w && nblobs < 32; x++) {
             if (visited[y * w + x]) continue;
-            int seed_bright = brightness_rgb565(rgb565[y * w + x]);
+
+            int seed_bright  = brightness_rgb565(rgb565[y * w + x]);
             if (seed_bright > abs_thresh) continue;
             int local_bright = local_brightness_rgb565(rgb565, w, h, x, y);
             if (seed_bright > local_bright - SEED_CONTRAST) continue;
 
-            uint32_t cx, cy; int span, avg_chroma = 0, perimeter = 0, bbox_w = 0, bbox_h = 0;
+            uint32_t cx, cy;
+            int flood_thresh = local_bright - FLOOD_CONTRAST;
+            int span, avg_chroma = 0, perimeter = 0, bbox_w = 0, bbox_h = 0;
             int sz = flood_blob_rgb565(rgb565, w, h, x, y, visited, qx, qy,
-                                        w * h, &cx, &cy, &span, &avg_chroma,
-                                        &perimeter, &bbox_w, &bbox_h,
-                                        local_bright - FLOOD_CONTRAST, abs_thresh,
-                                        min_blob, max_span);
+                                       w * h, &cx, &cy, &span, &avg_chroma,
+                                       &perimeter, &bbox_w, &bbox_h,
+                                       flood_thresh, abs_thresh,
+                                       min_blob, max_span);
             if (sz <= 0) continue;
 
             int contrast = local_bright - seed_bright;
-            if (span     > dot_max_span)           continue;
-            if (contrast < SEED_CONTRAST)          continue;
-            if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+            if (span     > dot_max_span)               continue;
+            if (contrast < dot_min_contrast)           continue;
+            if (avg_chroma > CALIB_DOT_MAX_CHROMA)     continue;
 
-            float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter + 1);
-            if (circ < CALIB_DOT_MIN_CIRCULARITY)  continue;
+            float circ   = 4.0f * 3.14159f * sz /
+                           (float)(perimeter * perimeter + 1);
+            if (circ < CALIB_DOT_MIN_CIRCULARITY)      continue;
 
             float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
                            (float)(bbox_w > bbox_h ? bbox_w : bbox_h + 1);
-            if (aspect < CALIB_DOT_MIN_ASPECT)     continue;
+            if (aspect < CALIB_DOT_MIN_ASPECT)         continue;
 
             float fill = (float)sz / (float)(bbox_w * bbox_h + 1);
-            if (fill < CALIB_DOT_MIN_FILL)         continue;
+            if (fill < CALIB_DOT_MIN_FILL)             continue;
 
             int score = (int)(contrast * circ * circ * aspect * fill * 10000 + 0.5f);
 
-            blobs[nblobs][0] = (int)cx; blobs[nblobs][1] = (int)cy;
-            blobs[nblobs][2] = sz; blobs[nblobs][3] = span; blobs[nblobs][4] = contrast;
+            blobs[nblobs][0] = (int)cx;
+            blobs[nblobs][1] = (int)cy;
+            blobs[nblobs][2] = sz;
+            blobs[nblobs][3] = span;
+            blobs[nblobs][4] = contrast;
             blobs[nblobs][5] = score;
             blobs[nblobs][6] = 0;
 #if CALIB_DEBUG
@@ -494,20 +544,24 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
 #endif
             nblobs++;
         }
-
+    }
     free(visited); free(qmem);
 
     if (nblobs < 4) {
-        for (int i = 0; i < nblobs && i < 4; i++)
-            { out_ux[i] = (uint32_t)blobs[i][0]; out_uy[i] = (uint32_t)blobs[i][1]; }
-        return nblobs;
+        for (int i = 0; i < nblobs && i < 4; i++) {
+            out_ux[i] = (uint32_t)blobs[i][0];
+            out_uy[i] = (uint32_t)blobs[i][1];
+        }
+        return nblobs < 4 ? nblobs : 4;
     }
 
+    /* sort descending by score */
     for (int i = 0; i < nblobs - 1; i++)
         for (int j = i + 1; j < nblobs; j++)
             if (blobs[j][5] > blobs[i][5]) {
                 int t[7]; memcpy(t, blobs[i], sizeof(t));
-                memcpy(blobs[i], blobs[j], sizeof(t)); memcpy(blobs[j], t, sizeof(t));
+                memcpy(blobs[i], blobs[j], sizeof(t));
+                memcpy(blobs[j], t, sizeof(t));
             }
 
     if (nblobs > 8) nblobs = 8;
@@ -516,8 +570,8 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
     return 4;
 }
 
+/* ── DLT homography solver (4-point, 8 DOF) ─────────────────────── */
 #define N 8
-
 static void gauss_elim(float A[N][N], float b[N]) {
   for (int col = 0; col < N; col++) {
     int best = col;
@@ -541,10 +595,12 @@ static void gauss_elim(float A[N][N], float b[N]) {
     b[row] = s / A[row][row];
   }
 }
+#undef N
 
 bool calibrate_solve(const uint32_t ux[CALIB_N_POINTS],
                       const uint32_t uy[CALIB_N_POINTS], float H[3][3],
                       float *rms) {
+#define N 8
   float A[N][N] = {0}; float b[N] = {0};
   for (int i = 0; i < 4; i++) {
     float u = (float)ux[i], v = (float)uy[i], x = CALIB_MM[i][0], y = CALIB_MM[i][1];
@@ -563,15 +619,18 @@ bool calibrate_solve(const uint32_t ux[CALIB_N_POINTS],
     float py = (H[1][0]*u + H[1][1]*v + H[1][2]) / w;
     float dx = px - CALIB_MM[i][0], dy = py - CALIB_MM[i][1];
     float err = sqrtf(dx*dx + dy*dy);
-    printf("  Dot %d: pixel(%u,%u) → (%.0f,%.0f) mm  reconstructed(%.1f,%.1f)  error %.1f mm\n",
-           i, ux[i], uy[i], CALIB_MM[i][0], CALIB_MM[i][1], px, py, err);
+    printf("  Dot %d (%s): pixel(%4u,%4u) -> target(%+6.0f,%+6.0f)  proj(%7.1f,%7.1f)  err %.1f mm\n",
+           i, i==0?"top ":i==1?"left":i==2?"rght":"bot ",
+           ux[i], uy[i], CALIB_MM[i][0], CALIB_MM[i][1], px, py, err);
     sum += err * err;
   }
   *rms = sqrtf(sum / 4.0f);
+#undef N
   return true;
 }
 
-void calibrate_reproject(const float H[3][3], const uint32_t ux[CALIB_N_POINTS],
+void calibrate_reproject(const float H[3][3],
+                          const uint32_t ux[CALIB_N_POINTS],
                           const uint32_t uy[CALIB_N_POINTS]) {
   float sum = 0;
   for (int i = 0; i < 4; i++) {
@@ -581,11 +640,64 @@ void calibrate_reproject(const float H[3][3], const uint32_t ux[CALIB_N_POINTS],
     float py = (H[1][0]*u + H[1][1]*v + H[1][2]) / w;
     float dx = px - CALIB_MM[i][0], dy = py - CALIB_MM[i][1];
     float err = sqrtf(dx*dx + dy*dy);
-    printf("  Dot %d: pixel(%u,%u) → (%.0f,%.0f) mm  reconstructed(%.1f,%.1f)  error %.1f mm\n",
-           i, ux[i], uy[i], CALIB_MM[i][0], CALIB_MM[i][1], px, py, err);
+    printf("  Dot %d (%s): pixel(%4u,%4u) -> target(%+6.0f,%+6.0f)  proj(%7.1f,%7.1f)  err %.1f mm\n",
+           i, i==0?"top ":i==1?"left":i==2?"rght":"bot ",
+           ux[i], uy[i], CALIB_MM[i][0], CALIB_MM[i][1], px, py, err);
     sum += err * err;
   }
   printf("  RMS reprojection error: %.1f mm\n", sqrtf(sum / 4.0f));
+}
+
+/* ── Estimate missing 4th dot from 3 known correspondences ──────────
+ *
+ * Uses the symmetric cross geometry of the calibration pattern:
+ * opposite dots (top↔bottom, left↔right) reflect through the centroid.
+ * The 2 known dots on the other axis give the centroid midpoint;
+ * the missing dot is the reflection of its known opposite through
+ * that centroid.
+ */
+bool calibrate_estimate_missing_dot(
+        const uint32_t ux[CALIB_N_POINTS],
+        const uint32_t uy[CALIB_N_POINTS],
+        const int present[CALIB_N_POINTS],
+        uint32_t out_ux[CALIB_N_POINTS],
+        uint32_t out_uy[CALIB_N_POINTS])
+{
+    int n_present = 0, missing_idx = -1;
+    for (int i = 0; i < CALIB_N_POINTS; i++) {
+        out_ux[i] = ux[i];
+        out_uy[i] = uy[i];
+        if (present[i])
+            n_present++;
+        else
+            missing_idx = i;
+    }
+    if (n_present != 3 || missing_idx < 0)
+        return false;
+
+    /* opposite pairs: 0↔3 (top↔bottom), 1↔2 (left↔right) */
+    int opposite = missing_idx < 2 ? (missing_idx == 0 ? 3 : 2)
+                                   : (missing_idx == 2 ? 1 : 0);
+    int other[2], oi = 0;
+    for (int i = 0; i < CALIB_N_POINTS; i++) {
+        if (i != missing_idx && i != opposite)
+            other[oi++] = i;
+    }
+
+    /* centroid of the other-axis dots */
+    float cent_x = ((float)ux[other[0]] + (float)ux[other[1]]) * 0.5f;
+    float cent_y = ((float)uy[other[0]] + (float)uy[other[1]]) * 0.5f;
+
+    /* reflect known opposite through centroid */
+    out_ux[missing_idx] = (uint32_t)(2.0f * cent_x - (float)ux[opposite] + 0.5f);
+    out_uy[missing_idx] = (uint32_t)(2.0f * cent_y - (float)uy[opposite] + 0.5f);
+
+    printf("[CALIB] Estimated missing dot %d (%s): pixel(%u,%u) ← reflect %d through (%.0f,%.0f)\n",
+           missing_idx,
+           missing_idx==0?"top ":missing_idx==1?"left":missing_idx==2?"rght":"bot ",
+           out_ux[missing_idx], out_uy[missing_idx],
+           opposite, cent_x, cent_y);
+    return true;
 }
 
 void calibrate_save_matrix(const float H[3][3]) {
