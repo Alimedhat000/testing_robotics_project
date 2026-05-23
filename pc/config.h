@@ -10,21 +10,23 @@
 
 /* Calibration dot detection: contrast-based (no absolute threshold) */
 #define SEED_CONTRAST   2      /* Seed pixel contrast threshold (must be this much darker) */
-#define FLOOD_CONTRAST  2      /* Flood-fill neighbour contrast threshold (relaxed) */
-#define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000 dynamically) */
+#define FLOOD_CONTRAST  1      /* Flood-fill neighbour contrast threshold (relaxed) */
+#define MIN_DARK_BLOB   4      /* Min pixel count (also scaled by w*h/10000) */
 
-#define CALIB_DOT_MAX_CHROMA 18 /* Max average (max-min) allowed for dots */
+/* Local brightness window half-width. 11×11 at radius 5 reaches outside a 6px dot. */
+#define LOCAL_BRIGHT_RADIUS 5
 
-/* Circularity = 4π·area / perimeter².  A perfect circle = 1.0, dots ≈ 0.6–0.9,
-   shadows/creases ≪ 0.4. */
-#define CALIB_DOT_MIN_CIRCULARITY 0.60f /* Min circularity 4π·area/perim² — rejects shadows/creases */
-#define CALIB_DOT_MIN_ASPECT 0.40f      /* Min aspect ratio (small/large bbox side) — rejects elongated shadows */
-#define CALIB_DOT_MIN_FILL 0.35f        /* Min fill ratio (area/bbox_area) — rejects sparse/porous blobs */
+#define CALIB_DOT_MAX_CHROMA 20 /* Max average (max-min) allowed for dots */
+
+/* Circularity = 4π·area / perimeter².  Relaxed to 0.40 for tiny blobs at 320×240. */
+#define CALIB_DOT_MIN_CIRCULARITY 0.40f
+#define CALIB_DOT_MIN_ASPECT 0.40f
+#define CALIB_DOT_MIN_FILL 0.30f
 
 /* abs_thresh = min_bright + (max_bright - min_bright) / CALIB_ABS_THRESH_DIV
-   Lower divisor = more pixels qualify as "dark enough" */
+   Higher divisor = stricter gate (fewer dark pixels qualify) */
 #ifndef CALIB_ABS_THRESH_DIV
-#define CALIB_ABS_THRESH_DIV 2
+#define CALIB_ABS_THRESH_DIV 3
 #endif
 
 #define CALIB_DEBUG     1

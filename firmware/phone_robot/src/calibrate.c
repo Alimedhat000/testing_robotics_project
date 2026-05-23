@@ -51,12 +51,13 @@ static inline int brightness(const Pixel *p)
     return ((int)p->r + (int)p->g + (int)p->b) / 3;
 }
 
-// ── Average brightness in a 5×5 neighborhood ────────────────────────
+// ── Average brightness in a (2*R+1)×(2*R+1) neighbourhood ─────
 static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy)
 {
     int sum = 0, n = 0;
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
+    int r = LOCAL_BRIGHT_RADIUS;
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
             int px = cx + dx, py = cy + dy;
             if (px < 0 || px >= w || py < 0 || py >= h) continue;
             sum += brightness(&pixels[py * w + px]);
@@ -337,8 +338,9 @@ static inline int brightness_rgb565(uint16_t p) {
 
 static int local_brightness_rgb565(const uint16_t *rgb565, int w, int h, int cx, int cy) {
     int sum = 0, n = 0;
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
+    int r = LOCAL_BRIGHT_RADIUS;
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
             int px = cx + dx, py = cy + dy;
             if (px < 0 || px >= w || py < 0 || py >= h) continue;
             sum += brightness_rgb565(rgb565[py * w + px]);

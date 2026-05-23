@@ -25,7 +25,12 @@
  *   debug_06_final.png          -- full annotated output (objects + calib crosshairs)
  *
  * Usage:
- *   ./test_full [image.png/jpeg]
+ *   ./test_full [--resize WxH] [image.png/jpeg]
+ *
+ * Examples:
+ *   ./test_full pc/test_images/sample_2.jpeg           (native resolution)
+ *   ./test_full --resize 320x240 pc/test_images/sample_2.jpeg
+ *   ./test_full --resize 640x480 pc/test_images/sample_2.jpeg
  */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -40,8 +45,9 @@ static inline int brightness(const Pixel *p)
 static int local_brightness(const Pixel *pixels, int w, int h, int cx, int cy)
 {
     int sum = 0, n = 0;
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
+    int r = LOCAL_BRIGHT_RADIUS;
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
             int px = cx + dx, py = cy + dy;
             if (px < 0 || px >= w || py < 0 || py >= h) continue;
             sum += brightness(&pixels[py * w + px]);
@@ -78,6 +84,33 @@ static Pixel *dup_pixels(const Pixel *src, int w, int h)
     if (!copy) return NULL;
     memcpy(copy, src, bytes);
     return copy;
+}
+
+/* ── Bilinear resize for RGB888 image ────────────────────────────── */
+static uint8_t *resize_rgb(const uint8_t *src, int sw, int sh, int dw, int dh)
+{
+    uint8_t *dst = (uint8_t *)malloc((size_t)dw * dh * 3);
+    if (!dst) return NULL;
+    for (int dy = 0; dy < dh; dy++) {
+        for (int dx = 0; dx < dw; dx++) {
+            float sx = (float)dx / dw * sw;
+            float sy = (float)dy / dh * sh;
+            int ix = (int)sx, iy = (int)sy;
+            float fx = sx - ix, fy = sy - iy;
+            if (ix < 0) ix = 0; if (ix >= sw) ix = sw - 1;
+            if (iy < 0) iy = 0; if (iy >= sh) iy = sh - 1;
+            int ix2 = ix + 1 < sw ? ix + 1 : ix;
+            int iy2 = iy + 1 < sh ? iy + 1 : iy;
+            for (int c = 0; c < 3; c++) {
+                float v = (1-fx)*(1-fy)*src[(iy*sw+ix)*3+c]
+                        + fx*(1-fy)*src[(iy*sw+ix2)*3+c]
+                        + (1-fx)*fy*src[(iy2*sw+ix)*3+c]
+                        + fx*fy*src[(iy2*sw+ix2)*3+c];
+                dst[(dy*dw+dx)*3+c] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+    return dst;
 }
 
 static inline void set_px(Pixel *pixels, int w, int h,
@@ -631,12 +664,40 @@ static void output_dir_from_path(const char *path, char *out, size_t sz)
  * ═══════════════════════════════════════════════════════════════════ */
 int main(int argc, char **argv)
 {
-    const char *path = (argc > 1) ? argv[1] : "pc/test_images/sample_1.jpeg";
+    int dst_w = 0, dst_h = 0;
+    const char *path = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--resize") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%dx%d", &dst_w, &dst_h) != 2) {
+                fprintf(stderr, "Error: --resize requires WxH (e.g. --resize 320x240)\n");
+                return 1;
+            }
+        } else {
+            path = argv[i];
+        }
+    }
+    if (!path) path = "pc/test_images/sample_1.jpeg";
 
     int w = 0, h = 0;
     uint8_t *rgb = camera_load_image(path, &w, &h);
     if (!rgb) { fprintf(stderr, "Error: cannot load %s\n", path); return 1; }
-    printf("Loaded: %s  (%d x %d)\n\n", path, w, h);
+    printf("Loaded: %s  (%d x %d)\n", path, w, h);
+
+    /* ── Resize if requested ────────────────────────────────────────── */
+    if (dst_w > 0 && dst_h > 0 && (dst_w != w || dst_h != h)) {
+        uint8_t *resized = resize_rgb(rgb, w, h, dst_w, dst_h);
+        if (!resized) {
+            fprintf(stderr, "Error: resize malloc failed\n");
+            camera_free_image(rgb);
+            return 1;
+        }
+        camera_free_image(rgb);
+        rgb = resized;
+        w = dst_w;
+        h = dst_h;
+        printf("Resized to %d x %d\n", w, h);
+    }
+    printf("\n");
 
     Pixel *pixels = rgb_to_pixels(rgb, w, h);
     if (!pixels) {
