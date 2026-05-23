@@ -223,6 +223,9 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
                 memcpy(blobs[j], t, sizeof(t));
             }
 
+    // Keep only top 4 by contrast — actual calibration dots are black-on-white
+    if (nblobs > 4) nblobs = 4;
+
     int used[32] = {0};
     int yi = 0;
     for (int i = 1; i < nblobs; i++)
@@ -398,6 +401,9 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
                 int t[5]; memcpy(t, blobs[i], sizeof(t));
                 memcpy(blobs[i], blobs[j], sizeof(t)); memcpy(blobs[j], t, sizeof(t));
             }
+
+    // Keep only top 4 by contrast
+    if (nblobs > 4) nblobs = 4;
 
     int used[32] = {0}, yi = 0;
     for (int i = 1; i < nblobs; i++) if (blobs[i][1] < blobs[yi][1]) yi = i;
