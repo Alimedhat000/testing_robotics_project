@@ -71,8 +71,8 @@ static void draw_crosshair(Pixel *pixels, int w, int h, int cx, int cy) {
     int px = cx + d, py = cy;
     if (px >= 0 && px < w) {
       Pixel *p = &pixels[py * w + px];
-      p->r = 0;
-      p->g = 255;
+      p->r = 255;
+      p->g = 125;
       p->b = 0;
     }
   }
@@ -80,8 +80,8 @@ static void draw_crosshair(Pixel *pixels, int w, int h, int cx, int cy) {
     int px = cx, py = cy + d;
     if (py >= 0 && py < h) {
       Pixel *p = &pixels[py * w + px];
-      p->r = 0;
-      p->g = 255;
+      p->r = 255;
+      p->g = 125;
       p->b = 0;
     }
   }

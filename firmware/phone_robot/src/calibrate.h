@@ -85,6 +85,27 @@ void calibrate_reproject(const float H[3][3],
                           const uint32_t uy[CALIB_N_POINTS]);
 
 /**
+ * @brief Estimate pixel position of a missing 4th calibration dot
+ *        from 3 known correspondences.
+ *
+ * Uses the symmetric cross geometry: reflects the known opposite dot
+ * through the centroid of the other 2 known dots.
+ *
+ * @param ux   Pixel X of 4 dots (entries for missing dot ignored)
+ * @param uy   Pixel Y of 4 dots
+ * @param present  Array: 1=found, 0=missing
+ * @param out_ux  Output: input + estimated pixel X for missing dot
+ * @param out_uy  Output: input + estimated pixel Y for missing dot
+ * @return true if exactly 3 dots are present
+ */
+bool calibrate_estimate_missing_dot(
+        const uint32_t ux[CALIB_N_POINTS],
+        const uint32_t uy[CALIB_N_POINTS],
+        const int present[CALIB_N_POINTS],
+        uint32_t out_ux[CALIB_N_POINTS],
+        uint32_t out_uy[CALIB_N_POINTS]);
+
+/**
  * @brief Save homography matrix to NVS (ESP32 Preferences).
  * Persists the 3×3 matrix as 9 floats + a valid flag.
  * Also updates the live internal matrix used by calibrate_apply().
