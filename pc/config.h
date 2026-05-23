@@ -9,9 +9,11 @@
 #define MIN_BLOB_SIZE   50
 
 /* Calibration dot detection: contrast-based (no absolute threshold) */
-#define SEED_CONTRAST   5      /* Seed pixel contrast threshold (must be this much darker) */
+#define SEED_CONTRAST   3      /* Seed pixel contrast threshold (must be this much darker) */
 #define FLOOD_CONTRAST  3      /* Flood-fill neighbour contrast threshold (relaxed) */
 #define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000 dynamically) */
+
+#define CALIB_DEBUG     1
 
 #define WORKSPACE_X_MM  200.0f
 #define WORKSPACE_Y_MM  150.0f

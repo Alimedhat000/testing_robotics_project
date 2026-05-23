@@ -25,9 +25,11 @@
 /*  No absolute brightness threshold; uses local 5x5 contrast.   */
 /* ------------------------------------------------------------- */
 
-#define SEED_CONTRAST   5      /* Seed pixel contrast threshold (must be this much darker) */
+#define SEED_CONTRAST   3      /* Seed pixel contrast threshold (must be this much darker) */
 #define FLOOD_CONTRAST  3      /* Flood-fill neighbour contrast threshold (relaxed) */
 #define MIN_DARK_BLOB   20     /* Min pixel count (also scaled by w*h/10000) */
+
+#define CALIB_DEBUG     1
 
 /* ------------------------------------------------------------- */
 /*  Workspace geometry                                           */
