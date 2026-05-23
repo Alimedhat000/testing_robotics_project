@@ -152,6 +152,66 @@ static int flood_blob(Pixel *pixels, int w, int h, int sx, int sy,
     return (int)count;
 }
 
+/* ── Role assignment: angle-sort around centroid ─────────────────────
+ *
+ * Robust to perspective & camera tilt. Computes centroid of candidates,
+ * sorts by atan2 angle, maps CW order (top, right, bottom, left) to
+ * CALIB_MM role indices (0=top, 1=left, 2=right, 3=bottom).
+ */
+static void assign_roles(int blobs[][7], int n,
+                         uint32_t out_ux[4], uint32_t out_uy[4])
+{
+    float cx = 0, cy = 0;
+    for (int i = 0; i < n; i++) { cx += blobs[i][0]; cy += blobs[i][1]; }
+    cx /= n; cy /= n;
+
+    float angle[32];
+    for (int i = 0; i < n; i++)
+        angle[i] = atan2f((float)(blobs[i][1] - cy),
+                          (float)(blobs[i][0] - cx));
+
+    int top_i = 0;
+    for (int i = 1; i < n; i++)
+        if (blobs[i][1] < blobs[top_i][1]) top_i = i;
+
+    float anchor = angle[top_i];
+    float rel[32];
+    int order[32];
+    for (int i = 0; i < n; i++) {
+        order[i] = i;
+        rel[i] = anchor - angle[i];
+        while (rel[i] < 0)           rel[i] += 2.0f * 3.14159f;
+        while (rel[i] >= 2*3.14159f) rel[i] -= 2.0f * 3.14159f;
+    }
+    for (int i = 1; i < n; i++) {
+        int   ki = order[i]; float rv = rel[ki];
+        int j = i - 1;
+        while (j >= 0 && rel[order[j]] > rv) { order[j+1] = order[j]; j--; }
+        order[j+1] = ki;
+    }
+
+    int role_map[4] = {0, 2, 3, 1};
+    for (int slot = 0; slot < 4; slot++) {
+        int role = role_map[slot];
+        int bi   = order[slot];
+        out_ux[role] = (uint32_t)blobs[bi][0];
+        out_uy[role] = (uint32_t)blobs[bi][1];
+    }
+
+#if CALIB_DEBUG
+    printf("[CALIB] Role assignment (centroid %.0f,%.0f):\n", cx, cy);
+    for (int slot = 0; slot < 4; slot++) {
+        int role = role_map[slot];
+        int bi   = order[slot];
+        printf("  slot%d -> role%d (%s): blob(%d,%d) angle=%.1f deg\n",
+               slot, role,
+               role==0?"top":role==1?"left":role==2?"right":"bottom",
+               blobs[bi][0], blobs[bi][1],
+               angle[bi] * 180.0f / 3.14159f);
+    }
+#endif
+}
+
 // ── Detect 4 calibration dots by contrast-based flood-fill ─────────────
 int calibrate_find_dots(Pixel *pixels, int w, int h,
                          uint32_t out_ux[CALIB_N_POINTS],
@@ -181,7 +241,7 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
                    ? MIN_DARK_BLOB : w * h / 10000;
     int max_span = (w > h ? w : h) / 8;
 
-    int blobs[32][6];
+    int blobs[32][7];
     int nblobs = 0;
 
     int dot_max_span = max_span / 3;
@@ -204,32 +264,40 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
                                 &cx, &cy, &span, &avg_chroma, &perimeter,
                                 &bbox_w, &bbox_h,
                                 flood_thresh, abs_thresh, min_blob, max_span);
-            if (sz > 0) {
-                int contrast = local_bright - seed_bright;
-                if (span > dot_max_span) continue;
-                if (contrast < dot_min_contrast) continue;
-                if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
-                float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter);
-                if (circ < CALIB_DOT_MIN_CIRCULARITY) continue;
-                float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
-                               (float)(bbox_w > bbox_h ? bbox_w : bbox_h);
-                if (aspect < CALIB_DOT_MIN_ASPECT) continue;
-                float fill = (float)sz / (float)(bbox_w * bbox_h);
-                if (fill < CALIB_DOT_MIN_FILL) continue;
-                blobs[nblobs][0] = (int)cx;
-                blobs[nblobs][1] = (int)cy;
-                blobs[nblobs][2] = sz;
-                blobs[nblobs][3] = span;
-                blobs[nblobs][4] = contrast;
-                blobs[nblobs][5] = (int)(circ * 100 + 0.5f);
+            if (sz <= 0) continue;
+
+            int contrast = local_bright - seed_bright;
+            if (span     > dot_max_span)           continue;
+            if (contrast < dot_min_contrast)       continue;
+            if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+
+            float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter + 1);
+            if (circ < CALIB_DOT_MIN_CIRCULARITY)  continue;
+
+            float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
+                           (float)(bbox_w > bbox_h ? bbox_w : bbox_h + 1);
+            if (aspect < CALIB_DOT_MIN_ASPECT)     continue;
+
+            float fill = (float)sz / (float)(bbox_w * bbox_h + 1);
+            if (fill < CALIB_DOT_MIN_FILL)         continue;
+
+            int score = (int)(contrast * circ * circ * aspect * fill * 10000 + 0.5f);
+
+            blobs[nblobs][0] = (int)cx;
+            blobs[nblobs][1] = (int)cy;
+            blobs[nblobs][2] = sz;
+            blobs[nblobs][3] = span;
+            blobs[nblobs][4] = contrast;
+            blobs[nblobs][5] = score;
+            blobs[nblobs][6] = 0;
 #if CALIB_DEBUG
-                printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d chroma=%d circ=%d aspect=%d fill=%d\n",
-                       nblobs, (unsigned)cx, (unsigned)cy, span, sz,
-                       contrast, avg_chroma, blobs[nblobs][5],
-                       (int)(aspect * 100), (int)(fill * 100));
+            printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%2d cnt=%4d "
+                   "contrast=%3d chroma=%2d circ=%3d aspect=%3d fill=%3d score=%d\n",
+                   nblobs, (unsigned)cx, (unsigned)cy, span, sz, contrast,
+                   avg_chroma, (int)(circ*100), (int)(aspect*100),
+                   (int)(fill*100), score);
 #endif
-                nblobs++;
-            }
+            nblobs++;
         }
     }
 
@@ -243,46 +311,18 @@ int calibrate_find_dots(Pixel *pixels, int w, int h,
         return nblobs < 4 ? nblobs : 4;
     }
 
-    // Sort by contrast strength descending
+    // Sort by composite score descending
     for (int i = 0; i < nblobs - 1; i++)
         for (int j = i + 1; j < nblobs; j++)
-            if (blobs[j][4] > blobs[i][4]) {
-                int t[6]; memcpy(t, blobs[i], sizeof(t));
+            if (blobs[j][5] > blobs[i][5]) {
+                int t[7]; memcpy(t, blobs[i], sizeof(t));
                 memcpy(blobs[i], blobs[j], sizeof(t));
                 memcpy(blobs[j], t, sizeof(t));
             }
 
-    // Safety cap — axis-scoring works with many candidates, just prevent runaway
-    if (nblobs > 12) nblobs = 12;
+    if (nblobs > 8) nblobs = 8;
 
-    // Assign by axis-distance scoring: pick blob closest to each dot's expected position
-    // Expected positions form a cross: top(w/2,0), left(0,h/2), right(w,h/2), bottom(w/2,h)
-    int used[32] = {0};
-    float cx = w * 0.5f, cy = h * 0.5f;
-
-    for (int role = 0; role < 4; role++) {
-        float best_score = 1e20f;
-        int best_i = -1;
-        for (int i = 0; i < nblobs; i++) {
-            if (used[i]) continue;
-            float dx, dy;
-            switch (role) {
-                case 0: dx = blobs[i][0] - cx; dy = blobs[i][1];         break; // top
-                case 1: dx = blobs[i][0];       dy = blobs[i][1] - cy;   break; // left
-                case 2: dx = w - blobs[i][0];   dy = blobs[i][1] - cy;   break; // right
-                case 3: dx = blobs[i][0] - cx; dy = h - blobs[i][1];    break; // bottom
-            }
-            if (dx < 0) dx = -dx;
-            if (dy < 0) dy = -dy;
-            float score = dx + dy;
-            if (score < best_score) { best_score = score; best_i = i; }
-        }
-        if (best_i < 0) break;
-        out_ux[role] = (uint32_t)blobs[best_i][0];
-        out_uy[role] = (uint32_t)blobs[best_i][1];
-        used[best_i] = 1;
-    }
-
+    assign_roles(blobs, nblobs < 4 ? nblobs : 4, out_ux, out_uy);
     return 4;
 }
 
@@ -403,7 +443,7 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
     int *qx = qmem, *qy = qmem + (size_t)w * h;
     int min_blob = MIN_DARK_BLOB > w * h / 10000 ? MIN_DARK_BLOB : w * h / 10000;
     int max_span = (w > h ? w : h) / 8;
-    int blobs[32][6], nblobs = 0;
+    int blobs[32][7], nblobs = 0;
     int dot_max_span = max_span / 3; if (dot_max_span < 8) dot_max_span = 8;
 
     for (int y = 0; y < h && nblobs < 32; y++)
@@ -420,28 +460,37 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
                                         &perimeter, &bbox_w, &bbox_h,
                                         local_bright - FLOOD_CONTRAST, abs_thresh,
                                         min_blob, max_span);
-            if (sz > 0) {
-                int contrast = local_bright - seed_bright;
-                if (span > dot_max_span) continue;
-                if (contrast < SEED_CONTRAST) continue;
-                if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
-                float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter);
-                if (circ < CALIB_DOT_MIN_CIRCULARITY) continue;
-                float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
-                               (float)(bbox_w > bbox_h ? bbox_w : bbox_h);
-                if (aspect < CALIB_DOT_MIN_ASPECT) continue;
-                float fill = (float)sz / (float)(bbox_w * bbox_h);
-                if (fill < CALIB_DOT_MIN_FILL) continue;
-                blobs[nblobs][0] = (int)cx; blobs[nblobs][1] = (int)cy;
-                blobs[nblobs][2] = sz; blobs[nblobs][3] = span; blobs[nblobs][4] = contrast;
-                blobs[nblobs][5] = (int)(circ * 100 + 0.5f);
+            if (sz <= 0) continue;
+
+            int contrast = local_bright - seed_bright;
+            if (span     > dot_max_span)           continue;
+            if (contrast < SEED_CONTRAST)          continue;
+            if (avg_chroma > CALIB_DOT_MAX_CHROMA) continue;
+
+            float circ = 4.0f * 3.14159f * sz / (float)(perimeter * perimeter + 1);
+            if (circ < CALIB_DOT_MIN_CIRCULARITY)  continue;
+
+            float aspect = (float)(bbox_w < bbox_h ? bbox_w : bbox_h) /
+                           (float)(bbox_w > bbox_h ? bbox_w : bbox_h + 1);
+            if (aspect < CALIB_DOT_MIN_ASPECT)     continue;
+
+            float fill = (float)sz / (float)(bbox_w * bbox_h + 1);
+            if (fill < CALIB_DOT_MIN_FILL)         continue;
+
+            int score = (int)(contrast * circ * circ * aspect * fill * 10000 + 0.5f);
+
+            blobs[nblobs][0] = (int)cx; blobs[nblobs][1] = (int)cy;
+            blobs[nblobs][2] = sz; blobs[nblobs][3] = span; blobs[nblobs][4] = contrast;
+            blobs[nblobs][5] = score;
+            blobs[nblobs][6] = 0;
 #if CALIB_DEBUG
-                printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%d count=%d contrast=%d chroma=%d circ=%d aspect=%d fill=%d\n",
-                       nblobs, (unsigned)cx, (unsigned)cy, span, sz, contrast, avg_chroma, blobs[nblobs][5],
-                       (int)(aspect * 100), (int)(fill * 100));
+            printf("[CALIB] blob%2d: pixel(%4u,%4u) span=%2d cnt=%4d "
+                   "contrast=%3d chroma=%2d circ=%3d aspect=%3d fill=%3d score=%d\n",
+                   nblobs, (unsigned)cx, (unsigned)cy, span, sz, contrast,
+                   avg_chroma, (int)(circ*100), (int)(aspect*100),
+                   (int)(fill*100), score);
 #endif
-                nblobs++;
-            }
+            nblobs++;
         }
 
     free(visited); free(qmem);
@@ -454,41 +503,14 @@ int calibrate_find_dots_rgb565(const uint16_t *rgb565, int w, int h,
 
     for (int i = 0; i < nblobs - 1; i++)
         for (int j = i + 1; j < nblobs; j++)
-            if (blobs[j][4] > blobs[i][4]) {
-                int t[6]; memcpy(t, blobs[i], sizeof(t));
+            if (blobs[j][5] > blobs[i][5]) {
+                int t[7]; memcpy(t, blobs[i], sizeof(t));
                 memcpy(blobs[i], blobs[j], sizeof(t)); memcpy(blobs[j], t, sizeof(t));
             }
 
-    // Safety cap — axis-scoring works with many candidates, just prevent runaway
-    if (nblobs > 12) nblobs = 12;
+    if (nblobs > 8) nblobs = 8;
 
-    // Assign by axis-distance scoring
-    int used[32] = {0};
-    float cx = w * 0.5f, cy = h * 0.5f;
-
-    for (int role = 0; role < 4; role++) {
-        float best_score = 1e20f;
-        int best_i = -1;
-        for (int i = 0; i < nblobs; i++) {
-            if (used[i]) continue;
-            float dx, dy;
-            switch (role) {
-                case 0: dx = blobs[i][0] - cx; dy = blobs[i][1];         break; // top
-                case 1: dx = blobs[i][0];       dy = blobs[i][1] - cy;   break; // left
-                case 2: dx = w - blobs[i][0];   dy = blobs[i][1] - cy;   break; // right
-                case 3: dx = blobs[i][0] - cx; dy = h - blobs[i][1];    break; // bottom
-            }
-            if (dx < 0) dx = -dx;
-            if (dy < 0) dy = -dy;
-            float score = dx + dy;
-            if (score < best_score) { best_score = score; best_i = i; }
-        }
-        if (best_i < 0) break;
-        out_ux[role] = (uint32_t)blobs[best_i][0];
-        out_uy[role] = (uint32_t)blobs[best_i][1];
-        used[best_i] = 1;
-    }
-
+    assign_roles(blobs, nblobs < 4 ? nblobs : 4, out_ux, out_uy);
     return 4;
 }
 
