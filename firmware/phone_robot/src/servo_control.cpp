@@ -12,11 +12,17 @@ static const uint8_t servoPins[NUM_SERVOS] = {
 };
 
 static const int servoMin[NUM_SERVOS] = {
-    SERVO_BASE_MIN, SERVO_SHOULDER_MIN, SERVO_ELBOW_MIN, SERVO_GRIPPER_MIN
+    -90,   // base
+    -90,   // shoulder (servo-space: -90..0 after IK conversion)
+    0,     // elbow   (servo-space: 0..90 after IK conversion)
+    -20    // gripper
 };
 
 static const int servoMax[NUM_SERVOS] = {
-    SERVO_BASE_MAX, SERVO_SHOULDER_MAX, SERVO_ELBOW_MAX, SERVO_GRIPPER_MAX
+    90,    // base
+    0,     // shoulder
+    90,    // elbow
+    40     // gripper
 };
 
 #define STEP_DELAY_MS 15
@@ -75,6 +81,7 @@ static void moveAllServosSimultaneously(void)
             }
         }
         delay(STEP_DELAY_MS);
+        yield();
     }
 }
 

@@ -82,8 +82,10 @@
 /*  CALIBRATE: measure your physical arm links                   */
 /* ------------------------------------------------------------- */
 
-#define LINK1_MM 117.5f /* Shoulder → elbow length (mm) */
-#define LINK2_MM 200.0f /* Elbow → wrist  length (mm)  */
+#define LINK1_MM 120.0f      /* Shoulder → elbow (12 cm) */
+#define LINK2_MM 200.0f      /* Elbow → wrist  (20 cm)  */
+#define GRIPPER_LENGTH_MM 90.0f  /* Gripper extension (9 cm) */
+#define SHOULDER_Z_OFFSET_MM 100.0f /* Shoulder pivot above table (mm) */
 
 /* ------------------------------------------------------------- */
 /*  Servo pins                                                   */
@@ -97,22 +99,22 @@
 #define SERVO4_PIN 32 /* Gripper */
 
 /* ------------------------------------------------------------- */
-/*  Servo angle limits (logical degrees, 0 = center)             */
-/*  These are enforced by the IK solver and servo_control.       */
-/*  toPhysical() maps logical -90..90 → servo.write() 180..0.   */
+/*  Servo angle limits (IK-space)                                */
+/*  IK solver uses these internally, then converts to servo-space */
+/*  before returning.  servo_control.cpp clamps in servo-space.   */
 /* ------------------------------------------------------------- */
 
 #define SERVO_BASE_MIN -90
 #define SERVO_BASE_MAX 90
-#define SERVO_SHOULDER_MIN -90
-#define SERVO_SHOULDER_MAX 20
-#define SERVO_ELBOW_MIN 0
-#define SERVO_ELBOW_MAX 60
+#define SERVO_SHOULDER_MIN 0     /* IK: 0° = horizontal */
+#define SERVO_SHOULDER_MAX 90    /* IK: 90° = straight up */
+#define SERVO_ELBOW_MIN -90      /* IK: -90° = bent down (toward table) */
+#define SERVO_ELBOW_MAX 0        /* IK: 0° = extended straight */
 #define SERVO_GRIPPER_MIN -20
 #define SERVO_GRIPPER_MAX 40
 
-#define SERVO_GRIPPER_OPEN 30   /* Within [-20, 40], <-CALIBRATE-> */
-#define SERVO_GRIPPER_CLOSE -10 /* Within [-20, 40], <-CALIBRATE-> */
+#define SERVO_GRIPPER_OPEN -10
+#define SERVO_GRIPPER_CLOSE 30
 
 /* ------------------------------------------------------------- */
 /*  Fixed Z heights (encoded as shoulder degrees)                */

@@ -331,7 +331,7 @@ static void handlePick() {
     float mm_x, mm_y;
     kinematics_pixel_to_mm(g_res.colors[ci].px, g_res.colors[ci].py, &mm_x,
                            &mm_y);
-    ArmAngles blk = kinematics_solve_ik(mm_x, mm_y);
+    ArmAngles blk = kinematics_solve_ik(mm_x, mm_y, 0.0f);
 
     int cmd[4];
     cmd[0] = (int)blk.base_deg;
@@ -348,11 +348,11 @@ static void handlePick() {
     delay(300);
 
     cmd[1] -= 20;
-    if (cmd[1] < SERVO_SHOULDER_MIN)
-      cmd[1] = SERVO_SHOULDER_MIN;
+    if (cmd[1] < -90)
+      cmd[1] = -90;
     cmd[2] += 15;
-    if (cmd[2] > SERVO_ELBOW_MAX)
-      cmd[2] = SERVO_ELBOW_MAX;
+    if (cmd[2] > 90)
+      cmd[2] = 90;
     Serial.println("[PICK] Lift");
     servo_write_all(cmd);
     delay(200);
