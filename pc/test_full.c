@@ -559,7 +559,7 @@ static void save_filtered_blobs(Pixel *pixels, int w, int h,
             draw_rect(dbg, w, h, x0+t, y0+t, x1-t, y1-t, 0, 255, 0);
         }
 
-        draw_crosshair(dbg, w, h, b->cx, b->cy, 6, 0, 0, 200, 0);
+        draw_crosshair(dbg, w, h, b->cx, b->cy, 6, 0, 0, 0, 0);
 
         /* Stats label below the box */
         char line1[64], line2[64];
@@ -783,11 +783,185 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ── 3-dot fallback: estimate missing dot from diamond geometry ── */
+    uint32_t solved_ux[4], solved_uy[4];
+    int      dot_present[4] = {0, 0, 0, 0};
+    int      ndots_solved = ndots;
+
+    /* Copy found dots; calibrate_find_dots fills slots 0..ndots-1
+       but they are already role-assigned by position, so we need to
+       figure out which role each found dot occupies.               */
+    memcpy(solved_ux, dot_ux, sizeof(dot_ux));
+    memcpy(solved_uy, dot_uy, sizeof(dot_uy));
+
+    if (ndots == 4) {
+        for (int i = 0; i < 4; i++) dot_present[i] = 1;
+    } else if (ndots == 3) {
+        /* Identify which role slot is missing by comparing the 3
+           found dots against expected roles (top=min Y, left=min X,
+           right=max X, bottom=max Y).  Re-run the same role-assign
+           logic that calibrate_find_dots uses so slots match.      */
+
+        /* Re-assign: top = min Y among found */
+        int used[4] = {0};
+
+        int yi_min = 0;
+        for (int i = 1; i < 3; i++)
+            if (dot_uy[i] < dot_uy[yi_min]) yi_min = i;
+        solved_ux[0] = dot_ux[yi_min];
+        solved_uy[0] = dot_uy[yi_min];
+        dot_present[0] = 1;
+        used[yi_min] = 1;
+
+        int xi_min = -1;
+        for (int i = 0; i < 3; i++) {
+            if (used[i]) continue;
+            if (xi_min < 0 || dot_ux[i] < dot_ux[xi_min]) xi_min = i;
+        }
+        solved_ux[1] = dot_ux[xi_min];
+        solved_uy[1] = dot_uy[xi_min];
+        dot_present[1] = 1;
+        used[xi_min] = 1;
+
+        int xi_max = -1;
+        for (int i = 0; i < 3; i++) {
+            if (used[i]) continue;
+            if (xi_max < 0 || dot_ux[i] > dot_ux[xi_max]) xi_max = i;
+        }
+        /* The remaining slot: if xi_max == xi_min that means only 2
+           unused — pick the other one as right, last as bottom.    */
+        if (xi_max == xi_min) {
+            for (int i = 0; i < 3; i++) {
+                if (!used[i]) { xi_max = i; break; }
+            }
+        }
+
+        /* Check: do we have a 3rd unused slot for right? */
+        int right_candidate = -1, bottom_candidate = -1;
+        for (int i = 0; i < 3; i++) {
+            if (used[i]) continue;
+            if (right_candidate < 0) right_candidate = i;
+            else bottom_candidate = i;
+        }
+
+        if (right_candidate >= 0 && bottom_candidate < 0) {
+            /* Only 1 remaining — assign as right */
+            solved_ux[2] = dot_ux[right_candidate];
+            solved_uy[2] = dot_uy[right_candidate];
+            dot_present[2] = 1;
+            /* bottom is missing — estimate */
+            dot_present[3] = 0;
+        } else if (right_candidate >= 0 && bottom_candidate >= 0) {
+            /* 2 remaining — right = larger X */
+            int r_idx = dot_ux[right_candidate] >= dot_ux[bottom_candidate]
+                        ? right_candidate : bottom_candidate;
+            int b_idx = (r_idx == right_candidate) ? bottom_candidate
+                                                    : right_candidate;
+            solved_ux[2] = dot_ux[r_idx];
+            solved_uy[2] = dot_uy[r_idx];
+            dot_present[2] = 1;
+            solved_ux[3] = dot_ux[b_idx];
+            solved_uy[3] = dot_uy[b_idx];
+            dot_present[3] = 1;
+        }
+
+        /* Estimate any missing dot.
+           The 4 calibration dots form a known shape in mm-space.
+           With 3 pixel<->mm correspondences we can build a rough
+           affine map and project the missing mm point to pixels.
+
+           Affine from mm->pixel using 3 points (exact fit):
+             px = a*mx + b*my + c
+             py = d*mx + e*my + f                                   */
+        int missing = -1;
+        for (int i = 0; i < 4; i++)
+            if (!dot_present[i]) { missing = i; break; }
+
+        if (missing >= 0) {
+            /* Gather 3 present pairs */
+            float mu[3], mv[3], mpx[3], mpy[3];
+            int k = 0;
+            for (int i = 0; i < 4 && k < 3; i++) {
+                if (!dot_present[i]) continue;
+                mu[k]  = CALIB_MM[i][0];
+                mv[k]  = CALIB_MM[i][1];
+                mpx[k] = (float)solved_ux[i];
+                mpy[k] = (float)solved_uy[i];
+                k++;
+            }
+
+            /* Solve 3x3 for affine X coefficients [a,b,c]:
+               [mu0 mv0 1] [a]   [mpx0]
+               [mu1 mv1 1] [b] = [mpx1]
+               [mu2 mv2 1] [c]   [mpx2]             */
+            float A[3][3] = {
+                {mu[0], mv[0], 1.0f},
+                {mu[1], mv[1], 1.0f},
+                {mu[2], mv[2], 1.0f}
+            };
+            float det = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+                       -A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+                       +A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+
+            if (fabsf(det) > 1e-6f) {
+                /* Cramer's rule for both X and Y coefficients */
+                float inv_det = 1.0f / det;
+
+                /* cofactor matrix rows for solving */
+                float c00 =  (A[1][1]*A[2][2]-A[1][2]*A[2][1]);
+                float c01 = -(A[1][0]*A[2][2]-A[1][2]*A[2][0]);
+                float c02 =  (A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+                float c10 = -(A[0][1]*A[2][2]-A[0][2]*A[2][1]);
+                float c11 =  (A[0][0]*A[2][2]-A[0][2]*A[2][0]);
+                float c12 = -(A[0][0]*A[2][1]-A[0][1]*A[2][0]);
+                float c20 =  (A[0][1]*A[1][2]-A[0][2]*A[1][1]);
+                float c21 = -(A[0][0]*A[1][2]-A[0][2]*A[1][0]);
+                float c22 =  (A[0][0]*A[1][1]-A[0][1]*A[1][0]);
+
+                /* affine for pixel-X */
+                float ax = inv_det*(c00*mpx[0] + c10*mpx[1] + c20*mpx[2]);
+                float bx = inv_det*(c01*mpx[0] + c11*mpx[1] + c21*mpx[2]);
+                float cx2= inv_det*(c02*mpx[0] + c12*mpx[1] + c22*mpx[2]);
+
+                /* affine for pixel-Y */
+                float ay = inv_det*(c00*mpy[0] + c10*mpy[1] + c20*mpy[2]);
+                float by = inv_det*(c01*mpy[0] + c11*mpy[1] + c21*mpy[2]);
+                float cy2= inv_det*(c02*mpy[0] + c12*mpy[1] + c22*mpy[2]);
+
+                float tmm_x = CALIB_MM[missing][0];
+                float tmm_y = CALIB_MM[missing][1];
+                float est_px = ax*tmm_x + bx*tmm_y + cx2;
+                float est_py = ay*tmm_x + by*tmm_y + cy2;
+
+                /* Clamp to image bounds */
+                if (est_px < 0) est_px = 0;
+                if (est_px >= w) est_px = (float)(w - 1);
+                if (est_py < 0) est_py = 0;
+                if (est_py >= h) est_py = (float)(h - 1);
+
+                solved_ux[missing] = (uint32_t)(est_px + 0.5f);
+                solved_uy[missing] = (uint32_t)(est_py + 0.5f);
+                dot_present[missing] = 2;   /* 2 = estimated */
+                ndots_solved = 4;
+
+                printf("  [FALLBACK] Estimated missing dot %d "
+                       "(role %s) at pixel(%u,%u) from 3-point affine\n",
+                       missing,
+                       missing==0?"TOP":missing==1?"LEFT":
+                       missing==2?"RGHT":"BOT ",
+                       solved_ux[missing], solved_uy[missing]);
+            } else {
+                printf("  [FALLBACK] Cannot estimate dot %d: "
+                       "degenerate affine (det~0)\n", missing);
+            }
+        }
+    }
+
     /* ── debug_05: selected dots ─────────────────────────────────── */
-    if (ndots >= 4) {
+    if (ndots_solved >= 4) {
         snprintf(dbg_path, sizeof(dbg_path),
                  "%s/debug_05_selected_dots.png", out_dir);
-        save_selected_dots(pixels, w, h, dot_ux, dot_uy, rgb, dbg_path);
+        save_selected_dots(pixels, w, h, solved_ux, solved_uy, rgb, dbg_path);
         printf("Saved %s\n", dbg_path);
     }
 
@@ -796,22 +970,34 @@ int main(int argc, char **argv)
     float rms = 0.0f;
     int   have_h = 0;
 
-    if (ndots >= 4) {
-        calibrate_solve(dot_ux, dot_uy, H, &rms);
+    if (ndots_solved >= 4) {
+        calibrate_solve(solved_ux, solved_uy, H, &rms);
         have_h = 1;
         printf("\n  Homography matrix H:\n");
         printf("  [%9.5f  %9.5f  %9.5f]\n", H[0][0], H[0][1], H[0][2]);
         printf("  [%9.5f  %9.5f  %9.5f]\n", H[1][0], H[1][1], H[1][2]);
         printf("  [%9.5f  %9.5f  %9.5f]\n", H[2][0], H[2][1], H[2][2]);
         printf("  RMS reprojection error: %.2f mm\n\n", rms);
+        if (ndots < 4)
+            printf("  WARNING: homography built with %d real + %d estimated "
+                   "dot(s) -- accuracy reduced.\n\n",
+                   ndots, 4 - ndots);
 
-        /* Green crosshairs on calibration dots in final image */
-        for (int i = 0; i < 4; i++)
+        /* Crosshairs: orange for real dots, dashed magenta for estimated */
+        for (int i = 0; i < 4; i++) {
+            if (dot_present[i] == 2)   /* estimated */
+                draw_ring(pixels, w, h,
+                          (int)solved_ux[i], (int)solved_uy[i],
+                          8, 1, 255, 0, 255);
             draw_crosshair(pixels, w, h,
-                           (int)dot_ux[i], (int)dot_uy[i],
-                           10, 1, 0, 255, 0);
+                           (int)solved_ux[i], (int)solved_uy[i],
+                           10, 1,
+                           dot_present[i] == 2 ? 255 : 0,
+                           dot_present[i] == 2 ?   0 : 0,
+                           dot_present[i] == 2 ? 255 :   0);
+        }
     } else {
-        printf("  ERROR: need 4 dots -- only found %d.\n", ndots);
+        printf("  ERROR: need at least 3 dots -- only found %d.\n", ndots);
     }
 
     /* ═════════════════════════════════════════════════════════════
@@ -851,7 +1037,7 @@ int main(int argc, char **argv)
     if (have_h) {
         char rms_str[32];
         snprintf(rms_str, sizeof(rms_str), "RMS %.1fmm", rms);
-        draw_str_shadow(pixels, w, h, 6, 6, rms_str, 2, 0, 255, 0);
+        draw_str_shadow(pixels, w, h, 6, 6, rms_str, 2, 255, 125, 0);
     }
 
     pixels_to_rgb(pixels, rgb, w, h);

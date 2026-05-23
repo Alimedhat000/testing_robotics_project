@@ -18,10 +18,10 @@
  * angle — this is robust to any camera angle/tilt.
  */
 const float CALIB_MM[CALIB_N_POINTS][2] = {
-    {   0.0f,  100.0f },   // role 0: top
-    {-150.0f,    0.0f },   // role 1: left
-    { 150.0f,    0.0f },   // role 2: right
-    {   0.0f, -100.0f },   // role 3: bottom
+    {   0.0f,  250.0f },   // dot 0: top     (was  100 + 200 offset)
+    {-150.0f,  150.0f },   // dot 1: left    (was    0 + 200 offset)
+    { 150.0f,  150.0f },   // dot 2: right   (was    0 + 200 offset)
+    {   0.0f,  50.0f },   // dot 3: bottom  (was -100 + 200 offset)
 };
 
 /* ── Brightness = simple luminance (avg) ─────────────────────────── */
