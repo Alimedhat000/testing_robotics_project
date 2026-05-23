@@ -1,0 +1,14 @@
+# Compiled binaries and object files
+*.o
+vision_test
+test_full
+
+# Build output directory
+build/
+
+# PlatformIO build artifacts
+firmware/.pio/
+
+# OS files
+.DS_Store
+Thumbs.db
