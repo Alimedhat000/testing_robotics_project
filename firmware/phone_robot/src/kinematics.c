@@ -93,16 +93,15 @@ ArmAngles kinematics_solve_ik(float x_t, float y_t, float z_t) {
     }
   }
 
-  /* IK-space → servo-space conversion
-   * Shoulder: IK 0°=horizontal, servo 0°=vertical up → subtract 90°, clamp
-   * -90..0 Elbow:    IK negative=bend-down, servo positive=bend-down → negate,
-   * clamp 0..90
+  /* Return raw IK-space angles. Caller (main.cpp) converts to servo-space:
+   *   servo_shoulder = ik_shoulder - 90  (IK 0°=horizontal → servo 0°=up)
+   *   servo_elbow    = -ik_elbow          (IK sign opposite servo sign)
    */
   float base_deg = clampf(t1 * RAD2DEG, SERVO_BASE_MIN, SERVO_BASE_MAX);
-  float shoulder_deg = clampf((best_t2 * RAD2DEG) - 90.0f, SERVO_SHOULDER_MIN,
-                              SERVO_SHOULDER_MAX);
+  float shoulder_deg =
+      clampf(best_t2 * RAD2DEG, SERVO_SHOULDER_MIN, SERVO_SHOULDER_MAX);
   float elbow_deg =
-      clampf(-(best_t3 * RAD2DEG), SERVO_ELBOW_MIN, SERVO_ELBOW_MAX);
+      clampf(best_t3 * RAD2DEG, SERVO_ELBOW_MIN, SERVO_ELBOW_MAX);
 
   printf("[IK] raw: base=%.1f  shoulder=%.1f  elbow=%.1f"
          "  (r_xy=%.1f zs=%.1f reach=%.1f cos_t3=%.3f)\n",

@@ -87,7 +87,7 @@
 #define LINK1_MM 120.0f             /* Shoulder → elbow pivot (mm) */
 #define LINK2_MM 200.0f             /* Elbow pivot → gripper tip (mm) */
 #define GRIPPER_LENGTH_MM 90.0f     /* (included in LINK2_MM above) */
-#define SHOULDER_Z_OFFSET_MM 100.0f /* Shoulder pivot above table (mm) */
+#define SHOULDER_Z_OFFSET_MM 110.0f /* Shoulder pivot above table (mm) */
 
 /* ------------------------------------------------------------- */
 /*  Servo pins                                                   */
@@ -157,14 +157,14 @@
 #define BLUE_BIN_PX_X 280 /* Blue  bin X pixel, <-PLACEHOLDER-> */
 #define BLUE_BIN_PX_Y 120 /* Blue  bin Y pixel, <-PLACEHOLDER-> */
 
-#define RED_BIN_MM_X 150 /* Red   bin X mm  */
+#define RED_BIN_MM_X 200 /* Red   bin X mm  RIGHT*/
 #define RED_BIN_MM_Y 0   /* Red   bin Y mm  */
 
-#define GREEN_BIN_MM_X 200 /* Green bin X mm  */
-#define GREEN_BIN_MM_Y 0   /* Green bin Y mm  */
+#define GREEN_BIN_MM_X -200 /* Green bin X mm  LEFT*/
+#define GREEN_BIN_MM_Y 0    /* Green bin Y mm  */
 
-#define BLUE_BIN_MM_X 260 /* Blue  bin X mm  */
-#define BLUE_BIN_MM_Y 0   /* Blue  bin Y mm  */
+#define BLUE_BIN_MM_X 0    /* Blue  bin X mm  */
+#define BLUE_BIN_MM_Y -200 /* Blue  bin Y mm   BEHIND*/
 
 /* ------------------------------------------------------------- */
 /*  Shared data types used across all modules                    */

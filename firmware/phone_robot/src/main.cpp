@@ -320,10 +320,10 @@ static void handlePick() {
   server.client().flush();
 
   const char *cn[] = {"RED", "GREEN", "BLUE", "YELLOW"};
-  static const uint32_t bins[4][2] = {{RED_BIN_MM_X, RED_BIN_MM_Y},
-                                      {GREEN_BIN_MM_X, GREEN_BIN_MM_Y},
-                                      {BLUE_BIN_MM_X, BLUE_BIN_MM_Y},
-                                      {0, 0}};
+  static const int bins[4][2] = {{RED_BIN_MM_X, RED_BIN_MM_Y},
+                                       {GREEN_BIN_MM_X, GREEN_BIN_MM_Y},
+                                       {BLUE_BIN_MM_X, BLUE_BIN_MM_Y},
+                                       {0, 0}};
 
   // ── Lifted neutral pose ──────────────────────────────────────────────
   // Arm pointed straight up: shoulder = 0° (IK) → servo -90,
