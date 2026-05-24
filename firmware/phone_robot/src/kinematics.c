@@ -99,8 +99,10 @@ ArmAngles kinematics_solve_ik(float x_t, float y_t, float z_t) {
    * clamp 0..90
    */
   float base_deg = clampf(t1 * RAD2DEG, SERVO_BASE_MIN, SERVO_BASE_MAX);
-  float shoulder_deg = clampf((best_t2 * RAD2DEG) - 90.0f, -90.0f, 0.0f);
-  float elbow_deg = clampf(-(best_t3 * RAD2DEG), 0.0f, 90.0f);
+  float shoulder_deg = clampf((best_t2 * RAD2DEG) - 90.0f, SERVO_SHOULDER_MIN,
+                              SERVO_SHOULDER_MAX);
+  float elbow_deg =
+      clampf(-(best_t3 * RAD2DEG), SERVO_ELBOW_MIN, SERVO_ELBOW_MAX);
 
   printf("[IK] raw: base=%.1f  shoulder=%.1f  elbow=%.1f"
          "  (r_xy=%.1f zs=%.1f reach=%.1f cos_t3=%.3f)\n",

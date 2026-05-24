@@ -320,10 +320,20 @@ static void handlePick() {
   server.client().flush();
 
   const char *cn[] = {"RED", "GREEN", "BLUE", "YELLOW"};
-  static const uint32_t bins[4][2] = {{RED_BIN_PX_X, RED_BIN_PX_Y},
-                                      {GREEN_BIN_PX_X, GREEN_BIN_PX_Y},
-                                      {BLUE_BIN_PX_X, BLUE_BIN_PX_Y},
+  static const uint32_t bins[4][2] = {{RED_BIN_MM_X, RED_BIN_MM_Y},
+                                      {GREEN_BIN_MM_X, GREEN_BIN_MM_Y},
+                                      {BLUE_BIN_MM_X, BLUE_BIN_MM_Y},
                                       {0, 0}};
+
+  // ── Lifted neutral pose ──────────────────────────────────────────────
+  // Arm pointed straight up: shoulder = 0° (IK) → servo -90,
+  // elbow = 0° (IK) → servo 0.  Adjust these to match your robot's
+  // actual "arm vertical" pose if different.
+  const int LIFT_SHOULDER = -50; // servo degrees: arm well above table
+  const int LIFT_ELBOW = 20;     // servo degrees: forearm tucked slightly in
+  const int LIFT_DELAY_MS = 500; // ms to complete the lift
+  const int MOVE_DELAY_MS = 600; // ms for sweeping moves
+  const int GRIP_DELAY_MS = 400; // ms for gripper to close/open
 
   for (int ci = 0; ci < 4; ci++) {
     if (!g_res.colors[ci].found)
@@ -332,59 +342,124 @@ static void handlePick() {
       Serial.println("[PICK] YELLOW has no bin, skipping.");
       continue;
     }
-
     Serial.printf("[PICK] === %s ===\n", cn[ci]);
 
+    // 1. Solve IK for block position
     float mm_x, mm_y;
     kinematics_pixel_to_mm(g_res.colors[ci].px, g_res.colors[ci].py, &mm_x,
                            &mm_y);
     ArmAngles blk = kinematics_solve_ik(mm_x, mm_y, 0.0f);
 
-    int cmd[4];
-    cmd[0] = (int)blk.base_deg;
-    cmd[1] = (int)blk.shoulder_deg;
-    cmd[2] = (int)blk.elbow_deg;
-    cmd[3] = SERVO_GRIPPER_OPEN;
-    Serial.printf("[PICK] Move to block  base=%d sh=%d el=%d grip=%d\n", cmd[0],
-                  cmd[1], cmd[2], cmd[3]);
-    servo_write_all(cmd);
-    delay(300);
+    int base_blk = (int)roundf(blk.base_deg);
+    int sh_blk = (int)roundf(blk.shoulder_deg - 90.0f);
+    int el_blk = (int)roundf(-blk.elbow_deg);
 
-    Serial.println("[PICK] Grip");
+    // 2. Solve IK for bin position
+    ArmAngles bin = kinematics_solve_ik(bins[ci][0], bins[ci][1], 0.0f);
+
+    int base_bin = (int)roundf(bin.base_deg);
+    int sh_bin = (int)roundf(bin.shoulder_deg - 90.0f);
+    int el_bin = (int)roundf(-bin.elbow_deg);
+
+    // ── Step A: open gripper, move above block (same base/elbow as block,
+    //            but shoulder raised so we descend into it cleanly)
+    {
+      int cmd[4] = {base_blk, LIFT_SHOULDER, LIFT_ELBOW, SERVO_GRIPPER_OPEN};
+      Serial.printf("[PICK] A - Swing to block column  base=%d sh=%d el=%d\n",
+                    cmd[0], cmd[1], cmd[2]);
+      servo_write_all(cmd);
+      delay(MOVE_DELAY_MS);
+    }
+
+    // ── Step B: lower onto block
+    {
+      int cmd[4] = {base_blk, sh_blk, el_blk, SERVO_GRIPPER_OPEN};
+      Serial.printf("[PICK] B - Lower to block  sh=%d el=%d\n", sh_blk, el_blk);
+      servo_write_all(cmd);
+      delay(MOVE_DELAY_MS);
+    }
+
+    // ── Step C: close gripper
+    Serial.println("[PICK] C - Grip");
     servo_write_single(3, SERVO_GRIPPER_CLOSE);
-    delay(300);
+    delay(GRIP_DELAY_MS);
 
-    cmd[1] -= 20;
-    if (cmd[1] < -90)
-      cmd[1] = -90;
-    cmd[2] += 15;
-    if (cmd[2] > 90)
-      cmd[2] = 90;
-    Serial.println("[PICK] Lift");
-    servo_write_all(cmd);
-    delay(200);
+    // ── Step D: lift straight up (keep same base, raise shoulder/elbow)
+    {
+      int cmd[4] = {base_blk, LIFT_SHOULDER, LIFT_ELBOW, SERVO_GRIPPER_CLOSE};
+      Serial.println("[PICK] D - Lift");
+      servo_write_all(cmd);
+      delay(LIFT_DELAY_MS); // give servos time to actually lift
+    }
 
-    ArmAngles bin = kinematics_bin_angles(bins[ci][0], bins[ci][1]);
-    cmd[0] = (int)bin.base_deg;
-    cmd[1] = (int)bin.shoulder_deg;
-    cmd[2] = (int)bin.elbow_deg;
-    cmd[3] = SERVO_GRIPPER_CLOSE;
-    Serial.printf("[PICK] Move to bin  base=%d sh=%d el=%d\n", cmd[0], cmd[1],
-                  cmd[2]);
-    servo_write_all(cmd);
-    delay(300);
+    // ── Step E: swing base to bin column (still lifted)
+    {
+      int cmd[4] = {base_bin, LIFT_SHOULDER, LIFT_ELBOW, SERVO_GRIPPER_CLOSE};
+      Serial.printf("[PICK] E - Swing to bin column  base=%d\n", base_bin);
+      servo_write_all(cmd);
+      delay(MOVE_DELAY_MS);
+    }
 
-    Serial.println("[PICK] Release");
+    // ── Step F: lower into bin
+    {
+      int cmd[4] = {base_bin, sh_bin, el_bin, SERVO_GRIPPER_CLOSE};
+      Serial.printf("[PICK] F - Lower to bin  sh=%d el=%d\n", sh_bin, el_bin);
+      servo_write_all(cmd);
+      delay(MOVE_DELAY_MS);
+    }
+
+    // ── Step G: release
+    Serial.println("[PICK] G - Release");
     servo_write_single(3, SERVO_GRIPPER_OPEN);
-    delay(300);
+    delay(GRIP_DELAY_MS);
 
-    Serial.println("[PICK] Home");
+    // ── Step H: lift out of bin before homing
+    {
+      int cmd[4] = {base_bin, LIFT_SHOULDER, LIFT_ELBOW, SERVO_GRIPPER_OPEN};
+      Serial.println("[PICK] H - Lift out of bin");
+      servo_write_all(cmd);
+      delay(LIFT_DELAY_MS);
+    }
+
+    // ── Step I: home
+    Serial.println("[PICK] I - Home");
     servo_home();
-    delay(500);
+    delay(600);
 
     Serial.printf("[PICK] %s done\n", cn[ci]);
   }
   Serial.println("[PICK] All done\n");
+}
+
+// ─── /goto handler ───────────────────────────────────────────────────────
+static void handleGoto() {
+  if (!server.hasArg("x") || !server.hasArg("y")) {
+    server.send(400, "text/plain", "Usage: /goto?x=MM&y=MM&z=MM  (z optional, default 0)");
+    return;
+  }
+  float x = server.arg("x").toFloat();
+  float y = server.arg("y").toFloat();
+  float z = server.hasArg("z") ? server.arg("z").toFloat() : 0.0f;
+
+  ArmAngles ang = kinematics_solve_ik(x, y, z);
+  if (ang.base_deg == HOME_BASE_DEG && ang.shoulder_deg == HOME_SHOULDER_DEG
+      && ang.elbow_deg == HOME_ELBOW_DEG && !(x == 0 && y == 0)) {
+    server.send(400, "text/plain", "UNREACHABLE");
+    return;
+  }
+
+  int cmd[4];
+  cmd[0] = (int)roundf(ang.base_deg);
+  cmd[1] = (int)roundf(ang.shoulder_deg - 90.0f);
+  cmd[2] = (int)roundf(-ang.elbow_deg);
+  cmd[3] = SERVO_GRIPPER_OPEN;
+  servo_write_all(cmd);
+
+  char resp[160];
+  snprintf(resp, sizeof(resp),
+           "OK  x=%.1f y=%.1f z=%.1f  →  base=%d sh=%d el=%d",
+           x, y, z, cmd[0], cmd[1], cmd[2]);
+  server.send(200, "text/plain", resp);
 }
 
 // ─── HTML page ───────────────────────────────────────────────────────────
@@ -421,6 +496,15 @@ static const char PAGE[] = R"HTML(
   <button id="cap" disabled>Capture</button>
   <button id="pick" disabled>Pick &amp; Place</button>
 
+  <hr style="margin:16px 0" />
+  <h3 style="margin:4px">Manual XYZ</h3>
+  <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin:4px 0">
+    <input id="gx" type="number" placeholder="X mm" step="5" style="width:70px;font-size:16px;padding:8px" />
+    <input id="gy" type="number" placeholder="Y mm" step="5" style="width:70px;font-size:16px;padding:8px" />
+    <input id="gz" type="number" placeholder="Z mm" value="0" step="5" style="width:70px;font-size:16px;padding:8px" />
+  </div>
+  <button id="go" style="background:#e67e22;font-size:18px;padding:10px 0">Go</button>
+
   <script>
     const v = document.getElementById('v');
     const c = document.getElementById('c');
@@ -430,6 +514,10 @@ static const char PAGE[] = R"HTML(
     const cap = document.getElementById('cap');
     const pick = document.getElementById('pick');
     const upload = document.getElementById('upload');
+    const gx = document.getElementById('gx');
+    const gy = document.getElementById('gy');
+    const gz = document.getElementById('gz');
+    const go = document.getElementById('go');
 
     function showResults(j) {
       let t = `Dots: ${j.dots}/4`;
@@ -519,6 +607,16 @@ static const char PAGE[] = R"HTML(
         info.textContent = 'Error: ' + e;
       }
     };
+
+    go.onclick = async () => {
+      const x = gx.value, y = gy.value, z = gz.value || '0';
+      if (!x || !y) { info.textContent = 'Enter X and Y'; return; }
+      info.textContent = `Moving to (${x}, ${y}, ${z})...`;
+      try {
+        const resp = await fetch(`/goto?x=${x}&y=${y}&z=${z}`);
+        info.textContent = await resp.text();
+      } catch (e) { info.textContent = 'Error: ' + e; }
+    };
   </script>
 </body>
 </html>
@@ -566,6 +664,7 @@ void setup() {
   server.on("/process", HTTP_POST, handleProcess, handleUpload);
   server.on("/results", HTTP_GET, handleResults);
   server.on("/pick", HTTP_POST, handlePick);
+  server.on("/goto", HTTP_GET, handleGoto);
   server.begin();
   Serial.printf("HTTP: http://%s/\n", WiFi.localIP().toString().c_str());
 }

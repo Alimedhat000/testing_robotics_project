@@ -10,8 +10,8 @@ static int targetAngle[NUM_SERVOS];
 static const uint8_t servoPins[NUM_SERVOS] = {SERVO1_PIN, SERVO2_PIN,
                                               SERVO3_PIN, SERVO4_PIN};
 
-static const int servoMin[NUM_SERVOS] = {-90, -90,   0, -20};
-static const int servoMax[NUM_SERVOS] = { 90,  0,  90,  40};
+static const int servoMin[NUM_SERVOS] = {-90, -90, 0, -20};
+static const int servoMax[NUM_SERVOS] = {90, 0, 90, 40};
 
 #define STEP_DELAY_MS 15
 

@@ -73,10 +73,10 @@
 /* ------------------------------------------------------------- */
 
 #define WORKSPACE_X_MM                                                         \
-  200.0f /* Total workspace width  (mm), <-PLACEHOLDER->                       \
+  200.0f /* Total workspace width  (mm)                                        \
           */
 #define WORKSPACE_Y_MM                                                         \
-  150.0f /* Total workspace height (mm), <-PLACEHOLDER->                       \
+  150.0f /* Total workspace height (mm)                                        \
           */
 
 /* ------------------------------------------------------------- */
@@ -156,6 +156,15 @@
 
 #define BLUE_BIN_PX_X 280 /* Blue  bin X pixel, <-PLACEHOLDER-> */
 #define BLUE_BIN_PX_Y 120 /* Blue  bin Y pixel, <-PLACEHOLDER-> */
+
+#define RED_BIN_MM_X 150 /* Red   bin X mm  */
+#define RED_BIN_MM_Y 0   /* Red   bin Y mm  */
+
+#define GREEN_BIN_MM_X 200 /* Green bin X mm  */
+#define GREEN_BIN_MM_Y 0   /* Green bin Y mm  */
+
+#define BLUE_BIN_MM_X 260 /* Blue  bin X mm  */
+#define BLUE_BIN_MM_Y 0   /* Blue  bin Y mm  */
 
 /* ------------------------------------------------------------- */
 /*  Shared data types used across all modules                    */
