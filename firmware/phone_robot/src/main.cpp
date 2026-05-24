@@ -71,8 +71,8 @@ static void draw_crosshair(Pixel *pixels, int w, int h, int cx, int cy) {
     int px = cx + d, py = cy;
     if (px >= 0 && px < w) {
       Pixel *p = &pixels[py * w + px];
-      p->r = 255;
-      p->g = 125;
+      p->r = 0;
+      p->g = 0;
       p->b = 0;
     }
   }
@@ -80,8 +80,8 @@ static void draw_crosshair(Pixel *pixels, int w, int h, int cx, int cy) {
     int px = cx, py = cy + d;
     if (py >= 0 && py < h) {
       Pixel *p = &pixels[py * w + px];
-      p->r = 255;
-      p->g = 125;
+      p->r = 0;
+      p->g = 0;
       p->b = 0;
     }
   }
@@ -105,7 +105,8 @@ static void handleUpload() {
     }
     upload_jpg = (uint8_t *)heap_caps_malloc(cap + 1, MALLOC_CAP_SPIRAM);
   } else if (up.status == UPLOAD_FILE_WRITE && upload_jpg) {
-    if (upload_rejected) return;
+    if (upload_rejected)
+      return;
     if (upload_len + up.currentSize > MAX_UPLOAD_JPEG) {
       upload_rejected = true;
       return;
@@ -128,7 +129,8 @@ static void handleUpload() {
 static void handleProcess() {
   if (upload_rejected) {
     upload_rejected = false;
-    server.send(413, "text/plain", "Image too large. Use Capture or downscale before upload.");
+    server.send(413, "text/plain",
+                "Image too large. Use Capture or downscale before upload.");
     return;
   }
   if (!upload_ready || !upload_jpg || upload_len == 0) {
@@ -150,7 +152,10 @@ static void handleProcess() {
   // JPEG -> RGB565 first, then expand to RGB888 Pixel
   size_t rgb565_len = npixels * 2;
   if (!decode_buf || decode_buf_len < rgb565_len) {
-    if (decode_buf) { free(decode_buf); decode_buf = NULL; }
+    if (decode_buf) {
+      free(decode_buf);
+      decode_buf = NULL;
+    }
     decode_buf = (uint8_t *)heap_caps_malloc(rgb565_len, MALLOC_CAP_SPIRAM);
     decode_buf_len = decode_buf ? rgb565_len : 0;
   }
@@ -179,12 +184,13 @@ static void handleProcess() {
     uint16_t word = ((uint16_t)decode_buf[i * 2 + 1] << 8) | decode_buf[i * 2];
     Pixel p;
     p.r = (uint8_t)((word >> 11) & 0x1F) << 3;
-    p.g = (uint8_t)((word >>  5) & 0x3F) << 2;
-    p.b = (uint8_t)( word        & 0x1F) << 3;
+    p.g = (uint8_t)((word >> 5) & 0x3F) << 2;
+    p.b = (uint8_t)(word & 0x1F) << 3;
     pixels[i] = p;
   }
 
-  Serial.printf("[PROC] Decoded %ux%u (RGB565->RGB888)\n", IMG_WIDTH, IMG_HEIGHT);
+  Serial.printf("[PROC] Decoded %ux%u (RGB565->RGB888)\n", IMG_WIDTH,
+                IMG_HEIGHT);
 
   // Brightness
   int mn = 255, mx = 0;
@@ -200,7 +206,8 @@ static void handleProcess() {
 
   // Calibration — on RGB565 directly (saves ~230KB vs RGB888 expansion)
   uint32_t du[4], dv[4];
-  int ndots = calibrate_find_dots_rgb565((uint16_t *)decode_buf, IMG_WIDTH, IMG_HEIGHT, du, dv);
+  int ndots = calibrate_find_dots_rgb565((uint16_t *)decode_buf, IMG_WIDTH,
+                                         IMG_HEIGHT, du, dv);
   Serial.printf("[PROC] Dots: %d/4\n", ndots);
   for (int i = 0; i < ndots; i++)
     Serial.printf("  Dot %d: pixel(%u,%u)\n", i, du[i], dv[i]);
